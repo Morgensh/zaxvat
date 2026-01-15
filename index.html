@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mobile War Simulator</title>
+    
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/topojson@3"></script>
+
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #ffffff; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        #map-container {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100%;
+            z-index: 1;
+        }
+
+        #ui-panel {
+            position: absolute; 
+            bottom: 0; 
+            left: 0; 
+            width: 100%; 
+            background: rgba(255, 255, 255, 0.95);
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+            box-shadow: 0 -5px 25px rgba(0,0,0,0.15);
+            z-index: 100;
+            padding-bottom: 20px;
+            transition: transform 0.3s;
+        }
+
+        .header {
+            text-align: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        #status-text {
+            font-size: 14px;
+            color: #555;
+            font-weight: 500;
+            margin: 0;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            padding: 15px;
+        }
+
+        button {
+            border: none;
+            height: 55px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.1s, opacity 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            line-height: 1.1;
+        }
+        
+        button:active { transform: scale(0.96); }
+
+        .btn-agg {
+            background-color: #ffebee;
+            color: #d32f2f;
+            border: 2px solid #ef9a9a;
+        }
+        .btn-agg.active {
+            background-color: #d32f2f;
+            color: white;
+            border-color: #b71c1c;
+        }
+
+        .btn-vic {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            border: 2px solid #90caf9;
+        }
+        .btn-vic.active {
+            background-color: #1976d2;
+            color: white;
+            border-color: #0d47a1;
+        }
+
+        .btn-action {
+            grid-column: span 2;
+            font-size: 18px;
+            letter-spacing: 0.5px;
+        }
+        
+        .btn-start {
+            background: linear-gradient(135deg, #43a047, #2e7d32);
+            color: white;
+        }
+        .btn-reset {
+            background: #78909c;
+            color: white;
+            height: 45px;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        .hidden { display: none; }
+
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 50; pointer-events: none; color: #777;
+        }
+
+    </style>
+</head>
+<body>
+
+<div id="map-container">
+    <canvas id="mainCanvas"></canvas>
+</div>
+
+<div id="loader">Загрузка мира...</div>
+
+<div id="ui-panel">
+    <div class="header">
+        <div id="status-text">Выберите: Кто нападает?</div>
+    </div>
+    
+    <div class="controls">
+        <button id="btn-agg" class="btn-agg" onclick="setMode('aggressor')">
+            <span>⚔️ Агрессор</span>
+        </button>
+        <button id="btn-vic" class="btn-vic" onclick="setMode('victim')">
+            <span>🛡️ Жертва</span>
+        </button>
+        
+        <button id="btn-start" class="btn-action btn-start" onclick="toggleSim()">
+            СТАРТ
+        </button>
+        
+        <button class="btn-action btn-reset" onclick="resetAll()">
+            Очистить карту
+        </button>
+    </div>
+</div>
+
+<script>
+    const CONFIG = {
+        internalW: 2000,
+        internalH: 1000,
+        colors: {
+            water: [245, 250, 255],
+            land:  [225, 225, 225],
+            agg:   [220, 40, 40],
+            vic:   [30, 100, 240]
+        }
+    };
+
+    let canvas, ctx, simCtx;
+    let grid = new Uint8Array(0);
+    let landFeatures = [];
+    let isRunning = false;
+    let interactionMode = 'aggressor';
+    let zoomState = d3.zoomIdentity;
+    let projection, pathGen;
+
+    let aggCoords = [];
+    let vicCenter = {x: 0, y: 0, count: 0};
+    let targetCountry = null;
+    let initialVicCount = 0;
+    let vicCaptured = false;
+
+    window.onload = async () => {
+        setupCanvas();
+        updateUI();
+
+        try {
+            const world = await d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json");
+            landFeatures = topojson.feature(world, world.objects.countries).features;
+            
+            projection = d3.geoEquirectangular()
+                .translate([CONFIG.internalW/2, CONFIG.internalH/2])
+                .scale(CONFIG.internalW / 6.3);
+                
+            pathGen = d3.geoPath(projection, simCtx);
+
+            resetAll();
+            document.getElementById('loader').style.display = 'none';
+
+            animate();
+        } catch (e) {
+            document.getElementById('loader').innerText = "Ошибка загрузки карты!";
+        }
+    };
+
+    function setupCanvas() {
+        canvas = document.getElementById('mainCanvas');
+        ctx = canvas.getContext('2d');
+
+        const sc = document.createElement('canvas');
+        sc.width = CONFIG.internalW;
+        sc.height = CONFIG.internalH;
+        simCtx = sc.getContext('2d', {willReadFrequently: true});
+
+        resize();
+        window.addEventListener('resize', resize);
+        
+        const zoom = d3.zoom()
+            .scaleExtent([0.5, 12])
+            .translateExtent([[-500, -500], [window.innerWidth+500, window.innerHeight+500]])
+            .on("zoom", e => {
+                zoomState = e.transform;
+                render();
+            });
+            
+        d3.select(canvas)
+          .call(zoom)
+          .on("touchstart click", handleInput)
+          .call(zoom.transform, d3.zoomIdentity.translate(0, 0).scale(1));
+    }
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        render();
+    }
+
+    function setMode(mode) {
+        if(isRunning) return;
+        interactionMode = mode;
+        updateUI();
+    }
+
+    function updateUI() {
+        const t = document.getElementById('status-text');
+        const bAgg = document.getElementById('btn-agg');
+        const bVic = document.getElementById('btn-vic');
+        const bStart = document.getElementById('btn-start');
+
+        bAgg.className = "btn-agg" + (interactionMode === 'aggressor' ? ' active' : '');
+        bVic.className = "btn-vic" + (interactionMode === 'victim' ? ' active' : '');
+
+        if(isRunning) {
+            bStart.innerText = "ПАУЗА";
+            bStart.style.background = "#e65100";
+            if (vicCaptured && vicCenter.count === 0) {
+                t.innerText = "Первая страна захвачена! Выберите новую жертву.";
+            } else {
+                t.innerText = "Война идёт...";
+            }
+        } else {
+            bStart.innerText = "НАЧАТЬ ВОЙНУ";
+            bStart.style.background = "linear-gradient(135deg, #43a047, #2e7d32)";
+            if (interactionMode === 'aggressor') t.innerText = "Нажмите на карту: АГРЕССОР";
+            else if (interactionMode === 'victim') t.innerText = "Нажмите на карту: ЖЕРТВА";
+            else t.innerText = "Нажмите СТАРТ";
+        }
+    }
+
+    function toggleSim() {
+        const hasRed = aggCoords.length > 0;
+        const hasBlue = vicCenter.count > 0;
+        
+        if (!hasRed || !hasBlue) {
+            alert("Нужно выбрать хотя бы по одной стране для каждой стороны!");
+            return;
+        }
+        
+        isRunning = !isRunning;
+        if (isRunning) {
+            initialVicCount = vicCenter.count;
+            vicCaptured = false;
+            interactionMode = null;
+        }
+        updateUI();
+    }
+
+    function handleInput(event) {
+        if(isRunning && vicCaptured && vicCenter.count === 0) {
+            if (interactionMode !== 'victim') {
+                interactionMode = 'victim';
+                updateUI();
+            }
+            return;
+        }
+        
+        if(isRunning || !interactionMode) return;
+        
+        const ptr = d3.pointer(event, canvas);
+        const transX = (ptr[0] - zoomState.x) / zoomState.k;
+        const transY = (ptr[1] - zoomState.y) / zoomState.k;
+        const lonLat = projection.invert([transX, transY]);
+        
+        const country = landFeatures.find(f => d3.geoContains(f, lonLat));
+        
+        if (country) {
+            if (isRunning && vicCaptured && vicCenter.count === 0 && interactionMode === 'victim') {
+                targetCountry = country;
+            }
+            drawCountry(country, interactionMode === 'aggressor' ? CONFIG.colors.agg : CONFIG.colors.vic);
+            refreshGrid();
+        }
+    }
+
+    function drawCountry(geo, color) {
+        simCtx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+        simCtx.beginPath();
+        pathGen(geo);
+        simCtx.fill();
+        simCtx.strokeStyle = "rgba(0,0,0,0.1)";
+        simCtx.stroke();
+    }
+
+    function resetAll() {
+        isRunning = false;
+        aggCoords = [];
+        vicCenter = {x:0, y:0, count:0};
+        targetCountry = null;
+        vicCaptured = false;
+        
+        simCtx.fillStyle = `rgb(${CONFIG.colors.water[0]}, ${CONFIG.colors.water[1]}, ${CONFIG.colors.water[2]})`;
+        simCtx.fillRect(0, 0, CONFIG.internalW, CONFIG.internalH);
+        
+        simCtx.fillStyle = `rgb(${CONFIG.colors.land[0]}, ${CONFIG.colors.land[1]}, ${CONFIG.colors.land[2]})`;
+        simCtx.beginPath();
+        landFeatures.forEach(f => pathGen(f));
+        simCtx.fill();
+        
+        simCtx.strokeStyle = "rgba(150,150,150,0.3)";
+        simCtx.lineWidth = 1;
+        simCtx.stroke();
+        
+        refreshGrid();
+        setMode('aggressor');
+    }
+
+    function refreshGrid() {
+        const idata = simCtx.getImageData(0,0,CONFIG.internalW,CONFIG.internalH);
+        const data = idata.data;
+        if(grid.length !== data.length/4) grid = new Uint8Array(data.length/4);
+        
+        aggCoords = [];
+        let vx = 0, vy = 0, vc = 0;
+
+        for(let i=0; i<grid.length; i++) {
+            const r = data[i*4];
+            
+            if (Math.abs(r - CONFIG.colors.agg[0]) < 30) {
+                grid[i] = 2;
+                if (Math.random() < 0.1) aggCoords.push(i);
+            }
+            else if (Math.abs(r - CONFIG.colors.vic[0]) < 30) {
+                grid[i] = 3;
+                const y = Math.floor(i / CONFIG.internalW);
+                const x = i % CONFIG.internalW;
+                vx += x; vy += y; vc++;
+            }
+            else if (r > 200) grid[i] = 1;
+            else grid[i] = 0;
+        }
+        
+        if (vc > 0) vicCenter = {x: vx/vc, y: vy/vc, count: vc};
+        else vicCenter = {x: 0, y: 0, count: 0};
+        
+        if (isRunning && initialVicCount > 0 && vc === 0 && !vicCaptured) {
+            vicCaptured = true;
+            isRunning = false;
+            interactionMode = 'victim';
+            alert("Первая страна захвачена! Теперь выберите следующую страну для атаки.");
+            updateUI();
+        }
+        
+        if (targetCountry && interactionMode === 'victim' && !isRunning) {
+            drawCountry(targetCountry, CONFIG.colors.vic);
+            targetCountry = null;
+            const hasRed = aggCoords.length > 0;
+            if (hasRed) {
+                isRunning = true;
+                initialVicCount = vicCenter.count;
+                vicCaptured = false;
+                interactionMode = null;
+                updateUI();
+            }
+        }
+        
+        render();
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if(!isRunning) return;
+        
+        if (aggCoords.length === 0 && vicCenter.count === 0) return;
+        if (Math.random() < 0.1) refreshGrid();
+        
+        const W = CONFIG.internalW;
+        const H = CONFIG.internalH;
+        const idata = simCtx.getImageData(0,0,W,H);
+        const px = idata.data;
+        let changes = false;
+        
+        const attacks = 80000;
+        const targetX = vicCenter.count > 0 ? vicCenter.x : W/2;
+        const targetY = vicCenter.count > 0 ? vicCenter.y : H/2;
+        
+        for(let n=0; n<attacks; n++) {
+            const i = Math.floor(Math.random() * grid.length);
+            const role = grid[i];
+            
+            if (role === 0 || role === 1) continue;
+            
+            const dx = Math.floor(Math.random()*3)-1;
+            const dy = Math.floor(Math.random()*3)-1;
+            if(dx===0 && dy===0) continue;
+            
+            const ni = i + dy*W + dx;
+            if (ni < 0 || ni >= grid.length) continue;
+            
+            const nRole = grid[ni];
+            
+            if (nRole === 0) continue;
+            if (nRole === role) continue;
+            
+            if (role === 2) {
+                let success = false;
+                
+                if (nRole === 3) {
+                    success = true;
+                }
+                else if (nRole === 1) {
+                    const cy = Math.floor(i / W);
+                    const cx = i % W;
+                    
+                    const distNow = Math.abs(targetX - cx) + Math.abs(targetY - cy);
+                    const distNext = Math.abs(targetX - (cx+dx)) + Math.abs(targetY - (cy+dy));
+                    
+                    if (distNext < distNow) {
+                        success = Math.random() < 0.6;
+                    } else {
+                        success = Math.random() < 0.05;
+                    }
+                    
+                    if (!success && Math.random() < 0.00005) {
+                        const dropX = Math.floor(targetX + (Math.random()-0.5)*100);
+                        const dropY = Math.floor(targetY + (Math.random()-0.5)*100);
+                        const dropI = dropY*W + dropX;
+                        if(dropI>0 && dropI<grid.length && grid[dropI]===1) {
+                            grid[dropI] = 2;
+                            setPixel(px, dropI, CONFIG.colors.agg);
+                            changes = true;
+                        }
+                    }
+                }
+                
+                if (success) {
+                    grid[ni] = 2;
+                    setPixel(px, ni, CONFIG.colors.agg);
+                    changes = true;
+                }
+            }
+            
+            else if (role === 3) {
+                if (nRole === 2) {
+                    if (Math.random() < 0.4) {
+                        grid[ni] = 3;
+                        setPixel(px, ni, CONFIG.colors.vic);
+                        changes = true;
+                    }
+                }
+            }
+        }
+        
+        if (changes) {
+            simCtx.putImageData(idata, 0, 0);
+            render();
+        }
+    }
+
+    function setPixel(px, i, color) {
+        px[i*4] = color[0];
+        px[i*4+1] = color[1];
+        px[i*4+2] = color[2];
+    }
+
+    function render() {
+        ctx.save();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0,0, canvas.width, canvas.height);
+        
+        ctx.translate(zoomState.x, zoomState.y);
+        ctx.scale(zoomState.k, zoomState.k);
+        
+        ctx.drawImage(simCtx.canvas, 0, 0);
+        ctx.restore();
+    }
+</script>
+
+</body>
+</html>
