@@ -152,11 +152,11 @@
     const TEX   = {};
     const total = Object.keys(assetMap).length;
     let   loaded = 0;
-    for (const [key, url] of Object.entries(assetMap)) {
-      try   { TEX[key] = await PIXI.Assets.load(url); }
-      catch { TEX[key] = PIXI.Texture.EMPTY; }
-      statusEl.textContent = `Загружаю ${++loaded}/${total}...`;
-    }
+    await Promise.all(Object.entries(assetMap).map(async ([key, url]) => {
+  try   { TEX[key] = await PIXI.Assets.load(url); }
+  catch { TEX[key] = PIXI.Texture.EMPTY; }
+  statusEl.textContent = `Загружаю ${++loaded}/${total}...`;
+}));
     statusEl.textContent = '';
 
     // detectBounds — та же логика что в оригинале.
@@ -406,9 +406,10 @@
             if (!tex || tex === PIXI.Texture.EMPTY) continue;
             const s   = acquireRockSprite();
             s.texture = tex;
-            const sz  = Math.max(tex.width, tex.height) * r.scale;
-            s.width   = sz * (tex.width  / Math.max(tex.width, tex.height));
-            s.height  = sz * (tex.height / Math.max(tex.width, tex.height));
+            const maxSide = Math.max(tex.width, tex.height);
+const sz      = maxSide * r.scale;
+s.width       = sz * (tex.width  / maxSide);
+s.height      = sz * (tex.height / maxSide);
             s.x       = r.wx; s.y = r.wy;
             s.zIndex  = r.wy - 100000;
             activeRockSprites.push(s);
@@ -512,10 +513,13 @@
     // ХЕЛПЕРЫ
     // ═══════════════════════════════════════════════════════════
     function getAngleToMouse()  { return Math.atan2(mouse.y - HH, mouse.x - HW); }
-    function getHandPos() {
-      const flip = player.facingLeft ? -1 : 1;
-      return { x: HW + HAND_OFFSET_X * flip, y: HH + HAND_OFFSET_Y };
-    }
+    const _handPos = { x: 0, y: 0 };
+function getHandPos() {
+  const flip = player.facingLeft ? -1 : 1;
+  _handPos.x = HW + HAND_OFFSET_X * flip;
+  _handPos.y = HH + HAND_OFFSET_Y;
+  return _handPos;
+}
     function getBarrelTip() {
       const h = getHandPos(), a = getAngleToMouse();
       const ca = Math.cos(a), sa = Math.sin(a);
@@ -564,12 +568,15 @@
     // ═══════════════════════════════════════════════════════════
     // HUD  — полоска HP
     // ═══════════════════════════════════════════════════════════
-    function drawHealthBar() {
-      const barW = 200, barH = 14;
-      const barX = HW - barW / 2, barY = 16;
-      const ratio = player.hp / PLAYER_MAX_HP;
+    let _lastHp = -1;
+function drawHealthBar() {
+  if (player.hp === _lastHp) return;
+  _lastHp = player.hp;
+  const barW = 200, barH = 14;
+  const barX = HW - barW / 2, barY = 16;
+  const ratio = player.hp / PLAYER_MAX_HP;
 
-      hpGfx.clear();
+  hpGfx.clear();
       hpGfx.beginFill(0x000000, 0.55).drawRect(barX-3, barY-3, barW+6, barH+6).endFill();
       hpGfx.beginFill(0x222222).drawRect(barX, barY, barW, barH).endFill();
 
@@ -723,7 +730,12 @@
       if (ground3Tile) { ground3Tile.tilePosition.x = -player.wx; ground3Tile.tilePosition.y = -player.wy; }
 
       // Виньетка урона
-      vignetteGfx.alpha = player.hitFlash > 0 ? (player.hitFlash / 350) * 0.38 : 0;
+      if (player.hitFlash > 0) {
+  vignetteGfx.visible = true;
+  vignetteGfx.alpha   = (player.hitFlash / 350) * 0.38;
+} else {
+  vignetteGfx.visible = false;
+}
 
       // Камни
       updateRocks();
@@ -759,11 +771,11 @@
         if (!e.dead) ec.alpha = 1;
 
         const eTex = enemyTextures[e.frame];
-        if (eTex && eTex !== PIXI.Texture.EMPTY) {
-          sp.texture = eTex;
-          sp.height  = ENEMY_H;
-          sp.width   = Math.round(ENEMY_H * (eTex.width / eTex.height));
-        }
+if (eTex && eTex !== PIXI.Texture.EMPTY && sp.texture !== eTex) {
+  sp.texture = eTex;
+  sp.height  = ENEMY_H;
+  sp.width   = Math.round(ENEMY_H * (eTex.width / eTex.height));
+}
 
         const facingLeft = (player.wx - e.wx) < 0;
         if (facingLeft) sp.scale.x = -Math.abs(sp.scale.x);
