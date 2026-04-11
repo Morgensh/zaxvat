@@ -6,38 +6,30 @@
   <title>Walk & Shoot</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #111; }
-    body { cursor: none; touch-action: none; }
-    canvas { display: block; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #111; touch-action: none; }
     #status {
       position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-      color: #888; font-family: monospace; font-size: 13px; pointer-events: none;
+      color: #888; font-family: monospace; font-size: 13px; pointer-events: none; z-index: 5;
     }
     #hint {
       position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
-      color: #444; font-family: monospace; font-size: 12px; pointer-events: none;
+      color: #444; font-family: monospace; font-size: 12px; pointer-events: none; z-index: 5;
     }
     #gameover {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78);
       align-items: center; justify-content: center; flex-direction: column;
       color: #ff3333; font-family: monospace; font-size: 42px; font-weight: bold;
-      text-shadow: 0 0 20px #ff0000;
+      text-shadow: 0 0 20px #ff0000; z-index: 20;
     }
     #gameover span { font-size: 17px; color: #aaa; margin-top: 16px; cursor: pointer; }
     #gameover.show { display: flex; }
-
-    /* Touch joystick */
-    #joystick-zone {
-      position: fixed; left: 0; bottom: 0;
-      width: 45%; height: 45%;
-      z-index: 10; pointer-events: none;
-    }
     #joystick-base {
-      position: absolute; display: none;
+      position: fixed; display: none;
       width: 110px; height: 110px; border-radius: 50%;
       background: rgba(255,255,255,0.07);
       border: 2px solid rgba(255,255,255,0.15);
       transform: translate(-50%, -50%);
+      z-index: 10; pointer-events: none;
     }
     #joystick-thumb {
       position: absolute; left: 50%; top: 50%;
@@ -58,80 +50,139 @@
   </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
   <div id="status">Загружаю...</div>
   <div id="hint">WASD — движение &nbsp;|&nbsp; ЛКМ — стрельба</div>
   <div id="gameover">
     ВЫ МЕРТВЫ
     <span onclick="location.reload()">[ нажмите чтобы начать заново ]</span>
   </div>
-
-  <!-- Touch controls -->
-  <div id="joystick-zone">
-    <div id="joystick-base"><div id="joystick-thumb"></div></div>
-  </div>
+  <div id="joystick-base"><div id="joystick-thumb"></div></div>
   <div id="shoot-btn">🔫</div>
 
+  <!-- PixiJS v7 — WebGL рендер, всё на GPU -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
   <script>
-    // ═══════════════════════════════════════════════════════════
-    // CANVAS + CONTEXT
-    // ═══════════════════════════════════════════════════════════
-    const canvas    = document.getElementById('c');
-    const ctx       = canvas.getContext('2d', { alpha: false }); // alpha:false = быстрее
-    const statusEl  = document.getElementById('status');
-    const gameoverEl = document.getElementById('gameover');
+  (async () => {
 
-    let CW = canvas.width  = window.innerWidth;
-    let CH = canvas.height = window.innerHeight;
-    let HW = CW / 2, HH = CH / 2; // half-width / half-height — кэшируем
+    const statusEl   = document.getElementById('status');
+    const gameoverEl = document.getElementById('gameover');
+    const joyBase    = document.getElementById('joystick-base');
+    const joyThumb   = document.getElementById('joystick-thumb');
+    const shootBtn   = document.getElementById('shoot-btn');
+
+    // ═══════════════════════════════════════════════════════════
+    // PIXI APP  — WebGL, autoDensity, resolution capped at 2
+    // ═══════════════════════════════════════════════════════════
+    const app = new PIXI.Application({
+      width:           window.innerWidth,
+      height:          window.innerHeight,
+      backgroundColor: 0x6b6b8a,
+      resolution:      Math.min(window.devicePixelRatio || 1, 2), // >2 на Android убивает перф
+      autoDensity:     true,
+      antialias:       false,   // не нужен для пиксель-арта, быстрее
+      powerPreference: 'high-performance',
+    });
+    document.body.appendChild(app.view);
+    Object.assign(app.view.style, { position:'fixed', top:'0', left:'0', width:'100%', height:'100%' });
+
+    let CW = window.innerWidth, CH = window.innerHeight;
+    let HW = CW / 2, HH = CH / 2;
 
     window.addEventListener('resize', () => {
-      CW = canvas.width  = window.innerWidth;
-      CH = canvas.height = window.innerHeight;
+      CW = window.innerWidth; CH = window.innerHeight;
       HW = CW / 2; HH = CH / 2;
-      rebuildPatterns();
+      app.renderer.resize(CW, CH);
+      if (groundTile)  { groundTile.width  = CW; groundTile.height  = CH; }
+      if (ground2Tile) { ground2Tile.width = CW; ground2Tile.height = CH; }
+      if (ground3Tile) { ground3Tile.width = CW; ground3Tile.height = CH; }
     });
 
     // ═══════════════════════════════════════════════════════════
-    // АДАПТИВНОЕ КАЧЕСТВО
-    // Если FPS падает — автоматически снижаем детали
+    // КОНТЕЙНЕРЫ  (порядок = z-order)
     // ═══════════════════════════════════════════════════════════
-    let fpsSmooth  = 60;
-    let lowQuality = false; // включается если FPS < 40
+    const groundLayer    = new PIXI.Container();        // тайловый фон
+    const worldContainer = new PIXI.Container();        // игровой мир (движется с камерой)
+    const hudContainer   = new PIXI.Container();        // HUD поверх всего
+    worldContainer.sortableChildren = true;
+
+    app.stage.addChild(groundLayer);
+    app.stage.addChild(worldContainer);
+    app.stage.addChild(hudContainer);
+
+    // Виньетка при уроне
+    const vignetteGfx = new PIXI.Graphics();
+    vignetteGfx.beginFill(0xff0000).drawRect(0, 0, 9999, 9999).endFill();
+    vignetteGfx.alpha = 0;
+    hudContainer.addChild(vignetteGfx);
+
+    // Полоска HP
+    const hpGfx = new PIXI.Graphics();
+    hudContainer.addChild(hpGfx);
+
+    // Счётчик убийств
+    const killText = new PIXI.Text('💀 0', {
+      fontFamily: 'monospace', fontSize: 11, fill: 0xbbbbbb,
+    });
+    hudContainer.addChild(killText);
 
     // ═══════════════════════════════════════════════════════════
     // ЗАГРУЗКА РЕСУРСОВ
+    // Отключаем ImageBitmap ДО загрузки — иначе Pixi v7 грузит через
+    // createImageBitmap() и source не является HTMLImageElement,
+    // из-за чего detectBounds не может прочитать пиксели.
     // ═══════════════════════════════════════════════════════════
-    const WALK_COUNT  = 8;
-    const walkFrames  = [];
-    const walkCrops   = [];
-    const enemyFrames = [];
-    const enemyCrops  = [];
-    let weaponImg, bulletImg, crosshairImg, muzzleImg;
-    let groundImg, ground2Img, ground3Img;
-    let groundPat, ground2Pat, ground3Pat;
-    const rockImgs   = [null, null, null];
-    const rockBounds = [null, null, null];
-    let weaponBounds = null;
+    PIXI.Assets.setPreferences({ preferWorkers: false, preferCreateImageBitmap: false });
 
-    function rebuildPatterns() {
-      if (groundImg)  groundPat  = ctx.createPattern(groundImg,  'repeat');
-      if (ground2Img) ground2Pat = ctx.createPattern(ground2Img, 'repeat');
-      if (ground3Img) ground3Pat = ctx.createPattern(ground3Img, 'repeat');
+    const WALK_COUNT = 8;
+    const assetMap   = {};
+    for (let i = 0; i < WALK_COUNT; i++) assetMap[`walk${i}`]  = `walked/walk_${i}.png`;
+    for (let i = 0; i < WALK_COUNT; i++) assetMap[`enemy${i}`] = `enemy1/walk_${i}.png`;
+    assetMap.weapon    = 'weapon/weaponR1.png';
+    assetMap.bullet    = 'weapon/bullet.png';
+    assetMap.crosshair = 'weapon/crosshair.png';
+    assetMap.muzzle    = 'weapon/muzzle.png';
+    assetMap.ground    = 'phon/ground_white.png';
+    assetMap.ground2   = 'phon/ground2_white.png';
+    assetMap.ground3   = 'phon/ground3_white.png';
+    assetMap.rock0     = 'phon/rock1.png';
+    assetMap.rock1     = 'phon/rock2.png';
+    assetMap.rock2     = 'phon/rock3.png';
+
+    // Грузим каждый файл по отдельности с fallback — если 404, не крашимся
+    const TEX   = {};
+    const total = Object.keys(assetMap).length;
+    let   loaded = 0;
+    for (const [key, url] of Object.entries(assetMap)) {
+      try   { TEX[key] = await PIXI.Assets.load(url); }
+      catch { TEX[key] = PIXI.Texture.EMPTY; }
+      statusEl.textContent = `Загружаю ${++loaded}/${total}...`;
     }
+    statusEl.textContent = '';
 
-    // detectBounds — масштабируем картинку до 256px макс перед анализом
-    // это в 4–16x быстрее чем на оригинальном размере
-    function detectBounds(img) {
-      const MAX = 256;
-      const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
-      const w = Math.round(img.naturalWidth  * scale);
-      const h = Math.round(img.naturalHeight * scale);
-      const oc = document.createElement('canvas');
-      oc.width = w; oc.height = h;
-      const ox = oc.getContext('2d');
-      ox.drawImage(img, 0, 0, w, h);
-      const d = ox.getImageData(0, 0, w, h).data;
+    // detectBounds — та же логика что в оригинале.
+    // source теперь всегда HTMLImageElement (ImageBitmap отключён выше).
+    function detectPixiBounds(texture) {
+      if (!texture || texture === PIXI.Texture.EMPTY) return null;
+      const resource = texture.baseTexture.resource;
+      // Ищем source в разных местах в зависимости от версии Pixi
+      const src = resource.source || resource._source || resource.bitmap;
+      if (!src) return null;
+
+      const MAX   = 256;
+      const ow    = src.naturalWidth  || src.width  || texture.baseTexture.width;
+      const oh    = src.naturalHeight || src.height || texture.baseTexture.height;
+      if (!ow || !oh) return null;
+      const scale = Math.min(1, MAX / Math.max(ow, oh));
+      const w     = Math.round(ow * scale);
+      const h     = Math.round(oh * scale);
+
+      const oc  = document.createElement('canvas');
+      oc.width  = w; oc.height = h;
+      const ox  = oc.getContext('2d');
+      try { ox.drawImage(src, 0, 0, w, h); } catch(e) { return null; }
+      let d;
+      try { d = ox.getImageData(0, 0, w, h).data; } catch(e) { return null; }
+
       let x0 = w, x1 = 0, y0 = h, y1 = 0;
       for (let y = 0; y < h; y++)
         for (let x = 0; x < w; x++)
@@ -139,180 +190,166 @@
             if (x < x0) x0 = x; if (x > x1) x1 = x;
             if (y < y0) y0 = y; if (y > y1) y1 = y;
           }
+
+      if (x1 <= x0 || y1 <= y0) return null; // пустая текстура
       const p = 2;
-      // Возвращаем bounds в координатах оригинала
-      return {
-        x: Math.max(0, (x0 - p) / scale),
-        y: Math.max(0, (y0 - p) / scale),
-        w: (x1 - x0 + p * 2) / scale,
-        h: (y1 - y0 + p * 2) / scale,
-      };
+      return new PIXI.Rectangle(
+        Math.max(0, (x0 - p) / scale),
+        Math.max(0, (y0 - p) / scale),
+        (x1 - x0 + p * 2) / scale,
+        (y1 - y0 + p * 2) / scale,
+      );
     }
 
-    let loaded = 0;
-    const TOTAL = WALK_COUNT + WALK_COUNT + 4 + 3 + 3;
-
-    function onLoad() {
-      loaded++;
-      statusEl.textContent = `Загружаю ${loaded}/${TOTAL}...`;
-      if (loaded === TOTAL) { statusEl.textContent = ''; startGame(); }
+    // Создаём обрезанную Pixi.Texture — аналог drawImage(img, crop.x,crop.y,crop.w,crop.h, ...)
+    function croppedTex(rawTex) {
+      if (!rawTex || rawTex === PIXI.Texture.EMPTY) return PIXI.Texture.EMPTY;
+      const frame = detectPixiBounds(rawTex);
+      if (!frame) return rawTex;
+      return new PIXI.Texture(rawTex.baseTexture, frame);
     }
 
-    // Загружаем detectBounds через setTimeout чтобы не блокировать поток
-    function loadSprite(src, frames, crops, idx) {
-      const img = new Image();
-      img.src = src;
-      img.onload = () => {
-        setTimeout(() => { crops[idx] = detectBounds(img); onLoad(); }, 0);
-      };
-      img.onerror = () => { crops[idx] = { x:0, y:0, w:64, h:64 }; onLoad(); };
-      frames.push(img);
+    const walkTextures  = Array.from({length: WALK_COUNT}, (_, i) => croppedTex(TEX[`walk${i}`]));
+    const enemyTextures = Array.from({length: WALK_COUNT}, (_, i) => croppedTex(TEX[`enemy${i}`]));
+    const rockTextures  = [croppedTex(TEX.rock0), croppedTex(TEX.rock1), croppedTex(TEX.rock2)];
+    // Оружие тоже обрезаем — иначе пушка будет крошечная внутри 1024px квадрата
+    const weaponTexCropped = croppedTex(TEX.weapon || PIXI.Texture.EMPTY);
+
+    // ═══════════════════════════════════════════════════════════
+    // ТАЙЛОВЫЙ ФОН  — TilingSprite рисуется GPU за один draw call
+    // Blend mode MULTIPLY работает через шейдер — бесплатно на GPU
+    // ═══════════════════════════════════════════════════════════
+    let groundTile, ground2Tile, ground3Tile;
+
+    if (TEX.ground && TEX.ground !== PIXI.Texture.EMPTY) {
+      groundTile = new PIXI.TilingSprite(TEX.ground, CW, CH);
+      groundTile.alpha = 0.90;
+      groundTile.blendMode = PIXI.BLEND_MODES.MULTIPLY;
+      groundLayer.addChild(groundTile);
     }
-
-    for (let i = 0; i < WALK_COUNT; i++) loadSprite(`walked/walk_${i}.png`,  walkFrames,  walkCrops,  i);
-    for (let i = 0; i < WALK_COUNT; i++) loadSprite(`enemy1/walk_${i}.png`,  enemyFrames, enemyCrops, i);
-
-    function loadImg(src, cb) {
-      const img = new Image();
-      img.src = src;
-      img.onload  = () => { cb(img); onLoad(); };
-      img.onerror = () => { cb(null); onLoad(); };
+    if (TEX.ground2 && TEX.ground2 !== PIXI.Texture.EMPTY) {
+      ground2Tile = new PIXI.TilingSprite(TEX.ground2, CW, CH);
+      ground2Tile.alpha = 0.35;
+      ground2Tile.blendMode = PIXI.BLEND_MODES.MULTIPLY;
+      groundLayer.addChild(ground2Tile);
     }
-
-    loadImg('weapon/weaponR1.png',  img => { weaponImg    = img; if(img) weaponBounds = detectBounds(img); });
-    loadImg('weapon/bullet.png',    img => { bulletImg    = img; });
-    loadImg('weapon/crosshair.png', img => { crosshairImg = img; });
-    loadImg('weapon/muzzle.png',    img => { muzzleImg    = img; });
-
-    loadImg('phon/ground_white.png',  img => { groundImg  = img; if(img) groundPat  = ctx.createPattern(img,'repeat'); });
-    loadImg('phon/ground2_white.png', img => { ground2Img = img; if(img) ground2Pat = ctx.createPattern(img,'repeat'); });
-    loadImg('phon/ground3_white.png', img => { ground3Img = img; if(img) ground3Pat = ctx.createPattern(img,'repeat'); });
-
-    for (let i = 0; i < 3; i++) {
-      const idx = i;
-      loadImg(`phon/rock${i+1}.png`, img => {
-        rockImgs[idx]   = img;
-        rockBounds[idx] = img ? detectBounds(img) : null;
-      });
+    if (TEX.ground3 && TEX.ground3 !== PIXI.Texture.EMPTY) {
+      ground3Tile = new PIXI.TilingSprite(TEX.ground3, CW, CH);
+      ground3Tile.alpha = 0.04;
+      ground3Tile.blendMode = PIXI.BLEND_MODES.MULTIPLY;
+      groundLayer.addChild(ground3Tile);
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ВВОД — клавиатура
+    // КОНСТАНТЫ  (идентичны оригиналу)
     // ═══════════════════════════════════════════════════════════
-    const keys  = {};
-    const mouse = { x: HW, y: HH };
-
-    window.addEventListener('keydown',   e => { keys[e.key] = true; });
-    window.addEventListener('keyup',     e => { keys[e.key] = false; });
-    window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-    window.addEventListener('mousedown', e => { if (e.button === 0 && !gameOver) shoot(); });
-
-    // ═══════════════════════════════════════════════════════════
-    // ТАЧ-УПРАВЛЕНИЕ — джойстик + кнопка стрельбы
-    // ═══════════════════════════════════════════════════════════
-    const isMobile = 'ontouchstart' in window;
-    const joyZone  = document.getElementById('joystick-zone');
-    const joyBase  = document.getElementById('joystick-base');
-    const joyThumb = document.getElementById('joystick-thumb');
-    const shootBtn = document.getElementById('shoot-btn');
-
-    const joy = { active: false, id: null, bx: 0, by: 0, dx: 0, dy: 0 };
-    const JOY_RADIUS = 45;
-    const JOY_DEAD   = 8;
-
-    if (isMobile) {
-      joyBase.style.display  = 'block';
-      shootBtn.style.display = 'flex';
-      document.getElementById('hint').style.display = 'none';
-
-      // Джойстик — левая половина экрана
-      canvas.addEventListener('touchstart', e => {
-        e.preventDefault();
-        for (const t of e.changedTouches) {
-          if (t.clientX > CW * 0.5) continue; // правая половина — стрельба
-          if (joy.active) continue;
-          joy.active = true; joy.id = t.identifier;
-          joy.bx = t.clientX; joy.by = t.clientY;
-          joy.dx = 0; joy.dy = 0;
-          joyBase.style.left = joy.bx + 'px';
-          joyBase.style.top  = joy.by + 'px';
-        }
-      }, { passive: false });
-
-      canvas.addEventListener('touchmove', e => {
-        e.preventDefault();
-        for (const t of e.changedTouches) {
-          if (t.identifier !== joy.id) continue;
-          const dx = t.clientX - joy.bx;
-          const dy = t.clientY - joy.by;
-          const d  = Math.sqrt(dx*dx + dy*dy);
-          const clamped = Math.min(d, JOY_RADIUS);
-          joy.dx = d > JOY_DEAD ? (dx / d) * (clamped / JOY_RADIUS) : 0;
-          joy.dy = d > JOY_DEAD ? (dy / d) * (clamped / JOY_RADIUS) : 0;
-          joyThumb.style.transform =
-            `translate(calc(-50% + ${joy.dx * JOY_RADIUS}px), calc(-50% + ${joy.dy * JOY_RADIUS}px))`;
-          // Прицел — направляем в сторону движения джойстика (если нет другого тача)
-          mouse.x = HW + joy.dx * 200;
-          mouse.y = HH + joy.dy * 200;
-        }
-      }, { passive: false });
-
-      const endJoy = e => {
-        for (const t of e.changedTouches) {
-          if (t.identifier !== joy.id) continue;
-          joy.active = false; joy.id = null;
-          joy.dx = 0; joy.dy = 0;
-          joyThumb.style.transform = 'translate(-50%, -50%)';
-        }
-      };
-      canvas.addEventListener('touchend',    endJoy, { passive: false });
-      canvas.addEventListener('touchcancel', endJoy, { passive: false });
-
-      // Стрельба — тап по правой половине или кнопка
-      canvas.addEventListener('touchstart', e => {
-        e.preventDefault();
-        for (const t of e.changedTouches) {
-          if (t.clientX <= CW * 0.5) continue;
-          if (!gameOver) shoot();
-        }
-      }, { passive: false });
-
-      shootBtn.addEventListener('touchstart', e => {
-        e.preventDefault();
-        shootBtn.classList.add('active');
-        if (!gameOver) shoot();
-      }, { passive: false });
-      shootBtn.addEventListener('touchend', () => shootBtn.classList.remove('active'));
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // КОНСТАНТЫ
-    // ═══════════════════════════════════════════════════════════
-    const SPRITE_H       = 85;
-    const ENEMY_H        = 75;
-    const WEAPON_W       = 62;
-    const WEAPON_H       = 31;
-    const TIP_DX         = WEAPON_W * 1.30;
-    const TIP_DY         = -WEAPON_H * 0.10;
-    const HAND_OFFSET_X  = 10;
-    const HAND_OFFSET_Y  = SPRITE_H * 0.22;
-
+    const SPRITE_H           = 85;
+    const ENEMY_H            = 75;
+    const WEAPON_W           = 62;
+    const WEAPON_H           = 31;
+    const TIP_DX             = WEAPON_W * 1.30;
+    const TIP_DY             = -WEAPON_H * 0.10;
+    const HAND_OFFSET_X      = 10;
+    const HAND_OFFSET_Y      = SPRITE_H * 0.22;
     const ENEMY_SPEED        = 1.8;
     const ENEMY_HP           = 3;
-    const ENEMY_HIT_RADIUS2  = 30 * 30;  // используем квадрат — без sqrt!
+    const ENEMY_HIT_RADIUS2  = 30 * 30;
     const BULLET_HIT_RADIUS2 = 28 * 28;
     const ENEMY_DAMAGE       = 18;
     const DAMAGE_COOLDOWN    = 800;
     const SPAWN_INTERVAL     = 3000;
     const SPAWN_RADIUS       = 650;
     const PLAYER_MAX_HP      = 100;
-    const MAX_ENEMIES        = 15;       // лимит зомби на экране
-    const MAX_BULLETS        = 20;       // лимит пуль
+    const MAX_ENEMIES        = 15;
+    const MAX_BULLETS        = 20;
+    const CHUNK_SIZE         = 600;
 
     // ═══════════════════════════════════════════════════════════
-    // КАРТА — камни
+    // ВВОД
     // ═══════════════════════════════════════════════════════════
-    const CHUNK_SIZE = 600;
+    const isMobile = 'ontouchstart' in window;
+    const keys     = {};
+    const mouse    = { x: HW, y: HH };
+    if (!isMobile) document.body.style.cursor = 'none';
+
+    window.addEventListener('keydown',   e => { keys[e.key] = true; });
+    window.addEventListener('keyup',     e => { keys[e.key] = false; });
+    window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+    window.addEventListener('mousedown', e => { if (e.button === 0 && !gameOver) shoot(); });
+
+    // Прицел (десктоп)
+    let crosshairSprite = null;
+    if (!isMobile && TEX.crosshair && TEX.crosshair !== PIXI.Texture.EMPTY) {
+      crosshairSprite = new PIXI.Sprite(TEX.crosshair);
+      crosshairSprite.anchor.set(0.5);
+      crosshairSprite.width = crosshairSprite.height = 40;
+      crosshairSprite.alpha = 0.85;
+      hudContainer.addChild(crosshairSprite);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ТАЧ УПРАВЛЕНИЕ
+    // ═══════════════════════════════════════════════════════════
+    const joy = { active: false, id: null, bx: 0, by: 0, dx: 0, dy: 0 };
+    const JOY_RADIUS = 45, JOY_DEAD = 8;
+
+    if (isMobile) {
+      joyBase.style.display  = 'block';
+      shootBtn.style.display = 'flex';
+      document.getElementById('hint').style.display = 'none';
+
+      const cv = app.view;
+
+      cv.addEventListener('touchstart', e => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (t.clientX > CW * 0.5) continue;
+          if (joy.active) continue;
+          joy.active = true; joy.id = t.identifier;
+          joy.bx = t.clientX; joy.by = t.clientY; joy.dx = 0; joy.dy = 0;
+          joyBase.style.left = joy.bx + 'px'; joyBase.style.top = joy.by + 'px';
+        }
+      }, { passive: false });
+
+      cv.addEventListener('touchmove', e => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (t.identifier !== joy.id) continue;
+          const dx = t.clientX - joy.bx, dy = t.clientY - joy.by;
+          const d = Math.sqrt(dx*dx + dy*dy), c = Math.min(d, JOY_RADIUS);
+          joy.dx = d > JOY_DEAD ? (dx/d)*(c/JOY_RADIUS) : 0;
+          joy.dy = d > JOY_DEAD ? (dy/d)*(c/JOY_RADIUS) : 0;
+          joyThumb.style.transform = `translate(calc(-50% + ${joy.dx*JOY_RADIUS}px), calc(-50% + ${joy.dy*JOY_RADIUS}px))`;
+          mouse.x = HW + joy.dx * 200; mouse.y = HH + joy.dy * 200;
+        }
+      }, { passive: false });
+
+      const endJoy = e => {
+        for (const t of e.changedTouches) {
+          if (t.identifier !== joy.id) continue;
+          joy.active = false; joy.id = null; joy.dx = 0; joy.dy = 0;
+          joyThumb.style.transform = 'translate(-50%,-50%)';
+        }
+      };
+      cv.addEventListener('touchend',    endJoy, { passive: false });
+      cv.addEventListener('touchcancel', endJoy, { passive: false });
+
+      cv.addEventListener('touchstart', e => {
+        e.preventDefault();
+        for (const t of e.changedTouches)
+          if (t.clientX > CW * 0.5 && !gameOver) shoot();
+      }, { passive: false });
+
+      shootBtn.addEventListener('touchstart', e => {
+        e.preventDefault(); shootBtn.classList.add('active');
+        if (!gameOver) shoot();
+      }, { passive: false });
+      shootBtn.addEventListener('touchend', () => shootBtn.classList.remove('active'));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // КАРТА — камни (chunk-based, процедурная)
+    // ═══════════════════════════════════════════════════════════
     const rocksCache = new Map();
 
     function seededRand(seed) {
@@ -321,15 +358,15 @@
     }
 
     function getChunkRocks(cx, cy) {
-      const key = cx * 10000 + cy; // числовой ключ быстрее строкового
+      const key = cx * 10000 + cy;
       if (rocksCache.has(key)) return rocksCache.get(key);
       const rand  = seededRand((cx * 73856093) ^ (cy * 19349663));
       const count = Math.floor(rand() * 3);
       const rocks = [];
       for (let i = 0; i < count; i++)
         rocks.push({
-          wx: cx * CHUNK_SIZE + rand() * CHUNK_SIZE,
-          wy: cy * CHUNK_SIZE + rand() * CHUNK_SIZE,
+          wx:    cx * CHUNK_SIZE + rand() * CHUNK_SIZE,
+          wy:    cy * CHUNK_SIZE + rand() * CHUNK_SIZE,
           type:  Math.floor(rand() * 3),
           scale: 0.035 + rand() * 0.045,
         });
@@ -337,107 +374,230 @@
       return rocks;
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // СОСТОЯНИЕ
-    // ═══════════════════════════════════════════════════════════
-    const bullets       = [];
-    const muzzleFlashes = [];
-    const enemies       = [];
-    // Переиспользуемый массив для depth sort — не аллоцируем каждый кадр
-    const drawables     = [];
+    // Пул спрайтов камней — не создаём новые объекты каждый кадр
+    const rockPool          = [];
+    const activeRockSprites = [];
 
+    function acquireRockSprite() {
+      if (rockPool.length) { const s = rockPool.pop(); s.visible = true; return s; }
+      const s = new PIXI.Sprite();
+      s.anchor.set(0.5);
+      s.alpha     = 0.55;
+      s.blendMode = PIXI.BLEND_MODES.MULTIPLY;
+      worldContainer.addChild(s);
+      return s;
+    }
+
+    function updateRocks() {
+      for (const s of activeRockSprites) { s.visible = false; rockPool.push(s); }
+      activeRockSprites.length = 0;
+
+      const margin = 200;
+      const vpL = player.wx - HW - margin, vpR = player.wx + HW + margin;
+      const vpT = player.wy - HH - margin, vpB = player.wy + HH + margin;
+      const cxMin = Math.floor(vpL / CHUNK_SIZE), cxMax = Math.floor(vpR / CHUNK_SIZE);
+      const cyMin = Math.floor(vpT / CHUNK_SIZE), cyMax = Math.floor(vpB / CHUNK_SIZE);
+
+      for (let cx = cxMin; cx <= cxMax; cx++) {
+        for (let cy = cyMin; cy <= cyMax; cy++) {
+          for (const r of getChunkRocks(cx, cy)) {
+            if (r.wx < vpL || r.wx > vpR || r.wy < vpT || r.wy > vpB) continue;
+            const tex = rockTextures[r.type];
+            if (!tex || tex === PIXI.Texture.EMPTY) continue;
+            const s   = acquireRockSprite();
+            s.texture = tex;
+            const sz  = Math.max(tex.width, tex.height) * r.scale;
+            s.width   = sz * (tex.width  / Math.max(tex.width, tex.height));
+            s.height  = sz * (tex.height / Math.max(tex.width, tex.height));
+            s.x       = r.wx; s.y = r.wy;
+            s.zIndex  = r.wy - 100000;
+            activeRockSprites.push(s);
+          }
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // СПРАЙТЫ ИГРОКА И ОРУЖИЯ
+    // ═══════════════════════════════════════════════════════════
+    const playerSprite = new PIXI.Sprite(walkTextures[0]);
+    playerSprite.anchor.set(0.5);
+    playerSprite.height = SPRITE_H;
+    playerSprite.width  = walkTextures[0] !== PIXI.Texture.EMPTY
+      ? Math.round(SPRITE_H * (walkTextures[0].width / walkTextures[0].height)) : SPRITE_H;
+    worldContainer.addChild(playerSprite);
+
+    // anchor.set(0.30, 0.5) = рукоять на 30% от левого края, как в оригинале
+    const weaponSprite = new PIXI.Sprite(weaponTexCropped);
+    weaponSprite.anchor.set(0.30, 0.5);
+    weaponSprite.width  = WEAPON_W;
+    weaponSprite.height = WEAPON_H;
+    worldContainer.addChild(weaponSprite);
+
+    // ═══════════════════════════════════════════════════════════
+    // ПУЛ ПУЛЬ
+    // ═══════════════════════════════════════════════════════════
+    const bulletPool = [];
+
+    function acquireBullet() {
+      if (bulletPool.length) { const s = bulletPool.pop(); s.visible = true; return s; }
+      const s = new PIXI.Sprite(TEX.bullet || PIXI.Texture.EMPTY);
+      s.anchor.set(0.5); s.width = s.height = 52;
+      worldContainer.addChild(s);
+      return s;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ПУЛ ВСПЫШЕК  (в hudContainer — экранные координаты)
+    // ═══════════════════════════════════════════════════════════
+    const muzzlePool = [];
+
+    function acquireMuzzle() {
+      if (muzzlePool.length) { const s = muzzlePool.pop(); s.visible = true; return s; }
+      const s = new PIXI.Sprite(TEX.muzzle || PIXI.Texture.EMPTY);
+      s.anchor.set(0.5); s.width = s.height = 80;
+      hudContainer.addChildAt(s, 0); // под виньеткой
+      return s;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ПУЛ ЗОМБИ
+    // ColorMatrixFilter.brightness() — белая вспышка через GPU шейдер,
+    // вместо offscreen Canvas + source-atop как в оригинале
+    // ═══════════════════════════════════════════════════════════
+    const enemyPool = [];
+
+    function acquireEnemy() {
+      if (enemyPool.length) {
+        const ec = enemyPool.pop();
+        ec.visible = true; ec.alpha = 1;
+        return ec;
+      }
+      const ec     = new PIXI.Container();
+      const sp     = new PIXI.Sprite(enemyTextures[0]);
+      sp.anchor.set(0.5);
+      ec.addChild(sp);
+      ec._sprite = sp;
+
+      // Фильтр яркости для белой вспышки попадания — GPU шейдер, очень быстро
+      const flashFilter = new PIXI.ColorMatrixFilter();
+      flashFilter.brightness(3, false);
+      ec._flashFilter = flashFilter;
+
+      worldContainer.addChild(ec);
+      return ec;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // СОСТОЯНИЕ ИГРЫ
+    // ═══════════════════════════════════════════════════════════
     let gameOver   = false;
     let spawnTimer = 0;
     let killCount  = 0;
-
-    // Кэшируем gradient healthbar — пересоздаём только при изменении HP
-    let hpGradient   = null;
-    let hpGradientRatio = -1;
-
-    // Offscreen canvas для hit-flash — рисуем спрайт туда,
-    // заливаем белым через source-atop (только по непрозрачным пикселям)
-    const flashCvs = document.createElement('canvas');
-    flashCvs.width = 256; flashCvs.height = 256;
-    const fCtx = flashCvs.getContext('2d');
 
     const player = {
       wx: 0, wy: 0,
       frame: 0, frameTimer: 0, frameDelay: 85,
       speed: 7,
-      facingLeft: false,
-      moving: false,
+      facingLeft: false, moving: false,
       hp: PLAYER_MAX_HP,
-      damageCooldown: 0,
-      hitFlash: 0,
+      damageCooldown: 0, hitFlash: 0,
     };
 
-    // Инлайним toScreen — не создаём объект каждый раз
-    function toScreenX(wx) { return wx - player.wx + HW; }
-    function toScreenY(wy) { return wy - player.wy + HH; }
+    const bullets       = [];
+    const muzzleFlashes = [];
+    const enemies       = [];
 
-    function getAngleToMouse() {
-      return Math.atan2(mouse.y - HH, mouse.x - HW);
-    }
+    // ═══════════════════════════════════════════════════════════
+    // ХЕЛПЕРЫ
+    // ═══════════════════════════════════════════════════════════
+    function getAngleToMouse()  { return Math.atan2(mouse.y - HH, mouse.x - HW); }
     function getHandPos() {
       const flip = player.facingLeft ? -1 : 1;
       return { x: HW + HAND_OFFSET_X * flip, y: HH + HAND_OFFSET_Y };
     }
     function getBarrelTip() {
-      const h = getHandPos();
-      const a = getAngleToMouse();
+      const h = getHandPos(), a = getAngleToMouse();
       const ca = Math.cos(a), sa = Math.sin(a);
       const sx = h.x + ca * TIP_DX - sa * TIP_DY;
       const sy = h.y + sa * TIP_DX + ca * TIP_DY;
       return { sx, sy, wx: player.wx + (sx - HW), wy: player.wy + (sy - HH) };
     }
+
     function shoot() {
       if (bullets.length >= MAX_BULLETS) return;
-      const tip = getBarrelTip();
-      const a   = getAngleToMouse();
-      bullets.push({ wx: tip.wx, wy: tip.wy, vx: Math.cos(a)*14, vy: Math.sin(a)*14, angle: a, life: 1 });
-      muzzleFlashes.push({ x: tip.sx, y: tip.sy, angle: a, life: 1 });
+      const tip = getBarrelTip(), a = getAngleToMouse();
+
+      const bs   = acquireBullet();
+      bs.x       = tip.wx; bs.y = tip.wy;
+      bs.rotation = a; bs.alpha = 1;
+      bullets.push({ wx: tip.wx, wy: tip.wy, vx: Math.cos(a)*14, vy: Math.sin(a)*14, life: 1, sprite: bs });
+
+      const ms   = acquireMuzzle();
+      ms.x       = tip.sx; ms.y = tip.sy;
+      ms.rotation = a; ms.alpha = 1;
+      muzzleFlashes.push({ life: 1, sprite: ms });
     }
 
     function spawnEnemy() {
       if (enemies.length >= MAX_ENEMIES) return;
       const angle = Math.random() * Math.PI * 2;
       const dist  = SPAWN_RADIUS + Math.random() * 200;
+      const ex    = player.wx + Math.cos(angle) * dist;
+      const ey    = player.wy + Math.sin(angle) * dist;
+
+      const ec     = acquireEnemy();
+      ec.x         = ex; ec.y = ey;
+      const sp     = ec._sprite;
+      sp.texture   = enemyTextures[0];
+      sp.height    = ENEMY_H;
+      sp.width     = Math.round(ENEMY_H * (enemyTextures[0].width / enemyTextures[0].height || 1));
+
       enemies.push({
-        wx: player.wx + Math.cos(angle) * dist,
-        wy: player.wy + Math.sin(angle) * dist,
+        wx: ex, wy: ey,
         frame: 0, frameTimer: 0, frameDelay: 110,
         hp: ENEMY_HP, hitFlash: 0, dead: false, dying: 0,
+        ec,
       });
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ИГРОВОЙ ЦИКЛ
+    // HUD  — полоска HP
     // ═══════════════════════════════════════════════════════════
-    let lastTime = 0;
-    const TARGET_FPS = 60;
-    const FRAME_MIN  = 1000 / TARGET_FPS;
+    function drawHealthBar() {
+      const barW = 200, barH = 14;
+      const barX = HW - barW / 2, barY = 16;
+      const ratio = player.hp / PLAYER_MAX_HP;
 
-    function startGame() {
-      spawnEnemy(); spawnEnemy(); spawnEnemy();
-      lastTime = performance.now();
-      requestAnimationFrame(loop);
+      hpGfx.clear();
+      hpGfx.beginFill(0x000000, 0.55).drawRect(barX-3, barY-3, barW+6, barH+6).endFill();
+      hpGfx.beginFill(0x222222).drawRect(barX, barY, barW, barH).endFill();
+
+      const r = Math.round(255 * (1 - ratio));
+      const g = Math.round(210 * ratio);
+      hpGfx.beginFill((r << 16) | (g << 8) | 30).drawRect(barX, barY, barW * ratio, barH).endFill();
+      hpGfx.lineStyle(1, 0xFFFFFF, 0.2).drawRect(barX, barY, barW, barH);
+
+      killText.x = barX + barW + 10; killText.y = barY - 1;
     }
 
-    function loop(ts) {
+    // ═══════════════════════════════════════════════════════════
+    // СТАРТ
+    // ═══════════════════════════════════════════════════════════
+    spawnEnemy(); spawnEnemy(); spawnEnemy();
+
+    // ═══════════════════════════════════════════════════════════
+    // ИГРОВОЙ ЦИКЛ  — app.ticker = requestAnimationFrame обёртка Pixi
+    // ═══════════════════════════════════════════════════════════
+    app.ticker.maxFPS = 60;
+    app.ticker.add(() => {
       if (gameOver) return;
-
-      const dt = Math.min(ts - lastTime, 50);
-      lastTime = ts;
-
-      // Считаем FPS для адаптивного качества
-      fpsSmooth = fpsSmooth * 0.95 + (1000 / Math.max(dt, 1)) * 0.05;
-      lowQuality = fpsSmooth < 30;
+      const dt = Math.min(app.ticker.deltaMS, 50);
 
       // ── Спавн ──
       spawnTimer += dt;
       if (spawnTimer >= SPAWN_INTERVAL) {
-        spawnTimer = 0;
-        spawnEnemy();
+        spawnTimer = 0; spawnEnemy();
         if (killCount > 5)  spawnEnemy();
         if (killCount > 15) spawnEnemy();
       }
@@ -447,11 +607,9 @@
       const right = keys['ArrowRight'] || keys['d'] || keys['D'] || (isMobile && joy.dx >  0.2);
       const up    = keys['ArrowUp']    || keys['w'] || keys['W'] || (isMobile && joy.dy < -0.2);
       const down  = keys['ArrowDown']  || keys['s'] || keys['S'] || (isMobile && joy.dy >  0.2);
-
       player.moving = left || right || up || down;
 
       if (isMobile && joy.active) {
-        // Плавное движение по джойстику
         player.wx += joy.dx * player.speed;
         player.wy += joy.dy * player.speed;
       } else {
@@ -478,42 +636,55 @@
         const b = bullets[i];
         b.wx += b.vx; b.wy += b.vy;
         b.life -= dt / 2000;
-        const sx = toScreenX(b.wx), sy = toScreenY(b.wy);
-        if (b.life <= 0 || sx < -200 || sx > CW+200 || sy < -200 || sy > CH+200) {
+        if (b.life <= 0) {
+          b.sprite.visible = false; bulletPool.push(b.sprite);
           bullets.splice(i, 1); continue;
         }
-        // Коллизия — без sqrt, используем квадрат расстояния
+        b.sprite.x = b.wx; b.sprite.y = b.wy;
+        b.sprite.alpha = Math.min(1, b.life * 2);
+
         let hit = false;
         for (const e of enemies) {
           if (e.dead) continue;
           const dx = b.wx - e.wx, dy = b.wy - e.wy;
           if (dx*dx + dy*dy < BULLET_HIT_RADIUS2) {
             e.hp--; e.hitFlash = 100;
-            if (e.hp <= 0) { e.dead = true; e.dying = 400; killCount++; }
+            if (e.hp <= 0) { e.dead = true; e.dying = 400; killCount++; killText.text = `💀 ${killCount}`; }
             hit = true; break;
           }
         }
-        if (hit) { bullets.splice(i, 1); }
+        if (hit) {
+          b.sprite.visible = false; bulletPool.push(b.sprite);
+          bullets.splice(i, 1);
+        }
       }
 
       // ── Вспышки ──
       for (let i = muzzleFlashes.length - 1; i >= 0; i--) {
-        muzzleFlashes[i].life -= dt / 80;
-        if (muzzleFlashes[i].life <= 0) muzzleFlashes.splice(i, 1);
+        const f = muzzleFlashes[i];
+        f.life -= dt / 80;
+        if (f.life <= 0) {
+          f.sprite.visible = false; muzzlePool.push(f.sprite);
+          muzzleFlashes.splice(i, 1); continue;
+        }
+        f.sprite.alpha = Math.min(1, f.life);
       }
 
-      // ── Зомби AI ──
+      // ── AI зомби ──
       for (let i = enemies.length - 1; i >= 0; i--) {
         const e = enemies[i];
         if (e.dead) {
           e.dying -= dt;
-          if (e.dying <= 0) { enemies.splice(i, 1); }
+          if (e.dying <= 0) {
+            e.ec.visible = false; enemyPool.push(e.ec);
+            enemies.splice(i, 1); continue;
+          }
+          e.ec.alpha = Math.max(0, e.dying / 400);
           continue;
         }
         if (e.hitFlash > 0) e.hitFlash -= dt;
 
-        const dx = player.wx - e.wx;
-        const dy = player.wy - e.wy;
+        const dx = player.wx - e.wx, dy = player.wy - e.wy;
         const dist2 = dx*dx + dy*dy;
 
         if (dist2 > ENEMY_HIT_RADIUS2) {
@@ -530,7 +701,6 @@
             player.hp = Math.max(0, player.hp - ENEMY_DAMAGE);
             player.damageCooldown = DAMAGE_COOLDOWN;
             player.hitFlash = 350;
-            hpGradientRatio = -1; // сброс кэша градиента
             if (player.hp <= 0) {
               gameOver = true;
               gameoverEl.classList.add('show');
@@ -539,260 +709,89 @@
         }
       }
 
-      draw();
-      requestAnimationFrame(loop);
-    }
+      // ══════════════════════════════════════════════════════
+      // РЕНДЕР  — только обновляем свойства спрайтов, GPU рисует
+      // ══════════════════════════════════════════════════════
 
-    // ═══════════════════════════════════════════════════════════
-    // РИСОВАНИЕ
-    // ═══════════════════════════════════════════════════════════
+      // Камера: двигаем worldContainer вместо toScreenX/Y
+      worldContainer.x = HW - player.wx;
+      worldContainer.y = HH - player.wy;
 
-    // Вспышка — без compositeOperation 'screen' (дорого), рисуем с globalAlpha
-    function drawMuzzle(img, cx, cy, w, h, angle, alpha) {
-      if (!img || alpha <= 0) return;
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, alpha);
-      ctx.translate(cx, cy);
-      if (angle) ctx.rotate(angle);
-      ctx.drawImage(img, -w/2, -h/2, w, h);
-      ctx.restore();
-    }
+      // Тайловый сдвиг фона
+      if (groundTile)  { groundTile.tilePosition.x  = -player.wx; groundTile.tilePosition.y  = -player.wy; }
+      if (ground2Tile) { ground2Tile.tilePosition.x = -player.wx; ground2Tile.tilePosition.y = -player.wy; }
+      if (ground3Tile) { ground3Tile.tilePosition.x = -player.wx; ground3Tile.tilePosition.y = -player.wy; }
 
-    function drawHealthBar() {
-      const barW  = 200;
-      const barH  = 14;
-      const barX  = HW - barW / 2;
-      const barY  = 16;
-      const ratio = player.hp / PLAYER_MAX_HP;
+      // Виньетка урона
+      vignetteGfx.alpha = player.hitFlash > 0 ? (player.hitFlash / 350) * 0.38 : 0;
 
-      // Фон
-      ctx.globalAlpha = 0.55;
-      ctx.fillStyle = '#000';
-      ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
-      ctx.globalAlpha = 1;
+      // Камни
+      updateRocks();
 
-      // Трек
-      ctx.fillStyle = '#222';
-      ctx.fillRect(barX, barY, barW, barH);
+      // Персонаж
+      const pTex = walkTextures[player.frame];
+      playerSprite.texture = pTex;
+      playerSprite.height  = SPRITE_H;
+      playerSprite.width   = pTex !== PIXI.Texture.EMPTY
+        ? Math.round(SPRITE_H * (pTex.width / pTex.height)) : SPRITE_H;
+      if (player.facingLeft) playerSprite.scale.x = -Math.abs(playerSprite.scale.x);
+      else                   playerSprite.scale.x =  Math.abs(playerSprite.scale.x);
+      playerSprite.x      = player.wx;
+      playerSprite.y      = player.wy;
+      playerSprite.zIndex = player.wy;
 
-      // Цветная полоска — кэшируем градиент
-      if (ratio !== hpGradientRatio) {
-        hpGradientRatio = ratio;
-        const r = Math.round(255 * (1 - ratio));
-        const g = Math.round(210 * ratio);
-        hpGradient = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-        hpGradient.addColorStop(0, `rgb(${r},${g},30)`);
-        hpGradient.addColorStop(1, `rgb(${Math.min(255,r+40)},${Math.min(255,g+40)},50)`);
-      }
-      ctx.fillStyle = hpGradient;
-      ctx.fillRect(barX, barY, barW * ratio, barH);
+      // Оружие
+      const h     = getHandPos();
+      const angle = getAngleToMouse();
+      const flipY = Math.abs(angle) > Math.PI / 2;
+      weaponSprite.x        = player.wx + (h.x - HW);
+      weaponSprite.y        = player.wy + (h.y - HH);
+      weaponSprite.rotation = angle;
+      if (flipY) weaponSprite.scale.y = -Math.abs(weaponSprite.scale.y);
+      else       weaponSprite.scale.y =  Math.abs(weaponSprite.scale.y);
+      weaponSprite.zIndex   = player.wy + 1;
 
-      // Рамка
-      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(barX, barY, barW, barH);
+      // Зомби
+      for (const e of enemies) {
+        const ec = e.ec, sp = ec._sprite;
+        ec.x      = e.wx; ec.y = e.wy;
+        ec.zIndex = e.wy;
+        if (!e.dead) ec.alpha = 1;
 
-      // Текст
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 10px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${player.hp} / ${PLAYER_MAX_HP}`, barX + barW / 2, barY + barH / 2);
-
-      // Счёт
-      ctx.fillStyle = '#bbb';
-      ctx.font = '11px monospace';
-      ctx.textAlign = 'left';
-      ctx.fillText(`💀 ${killCount}`, barX + barW + 10, barY + barH / 2);
-    }
-
-    function draw() {
-      // ── Фон ──
-      ctx.fillStyle = '#6b6b8a';
-      ctx.fillRect(0, 0, CW, CH);
-
-      // Красная виньетка при уроне — только fillRect, без save/restore
-      if (player.hitFlash > 0) {
-        ctx.globalAlpha = (player.hitFlash / 350) * 0.38;
-        ctx.fillStyle   = '#ff0000';
-        ctx.fillRect(0, 0, CW, CH);
-        ctx.globalAlpha = 1;
-      }
-
-      // ── Паттерны фона ──
-      const tw = groundImg  ? groundImg.width   : 512;
-      const th = groundImg  ? groundImg.height  : 512;
-      const offX = ((-player.wx % tw) + tw) % tw;
-      const offY = ((-player.wy % th) + th) % th;
-
-      ctx.globalCompositeOperation = 'multiply';
-      if (groundPat) {
-        ctx.save();
-        ctx.globalAlpha = 0.90;
-        ctx.translate(offX, offY);
-        ctx.fillStyle = groundPat;
-        ctx.fillRect(-offX, -offY, CW + tw, CH + th);
-        ctx.restore();
-      }
-      if (!lowQuality && ground2Pat) {
-        ctx.save();
-        ctx.globalAlpha = 0.35;
-        ctx.translate(offX, offY);
-        ctx.fillStyle = ground2Pat;
-        ctx.fillRect(-offX, -offY, CW + tw, CH + th);
-        ctx.restore();
-      }
-      if (!lowQuality && ground3Pat) {
-        ctx.save();
-        ctx.globalAlpha = 0.04;
-        ctx.translate(offX, offY);
-        ctx.fillStyle = ground3Pat;
-        ctx.fillRect(-offX, -offY, CW + tw, CH + th);
-        ctx.restore();
-      }
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 1;
-
-      // ── Камни ──
-      if (!lowQuality) {
-        const margin = 200;
-        const vpL = player.wx - HW - margin, vpR = player.wx + HW + margin;
-        const vpT = player.wy - HH - margin, vpB = player.wy + HH + margin;
-        const cxMin = Math.floor(vpL / CHUNK_SIZE), cxMax = Math.floor(vpR / CHUNK_SIZE);
-        const cyMin = Math.floor(vpT / CHUNK_SIZE), cyMax = Math.floor(vpB / CHUNK_SIZE);
-
-        const visRocks = [];
-        for (let cx = cxMin; cx <= cxMax; cx++)
-          for (let cy = cyMin; cy <= cyMax; cy++)
-            for (const r of getChunkRocks(cx, cy))
-              if (r.wx >= vpL && r.wx <= vpR && r.wy >= vpT && r.wy <= vpB)
-                visRocks.push(r);
-
-        ctx.globalAlpha = 0.55;
-        ctx.globalCompositeOperation = 'multiply';
-        for (const r of visRocks) {
-          const img = rockImgs[r.type], bnd = rockBounds[r.type];
-          if (!img || !bnd) continue;
-          const sx = toScreenX(r.wx), sy = toScreenY(r.wy);
-          const rw = bnd.w * r.scale, rh = bnd.h * r.scale;
-          ctx.drawImage(img, bnd.x, bnd.y, bnd.w, bnd.h, sx - rw/2, sy - rh/2, rw, rh);
+        const eTex = enemyTextures[e.frame];
+        if (eTex && eTex !== PIXI.Texture.EMPTY) {
+          sp.texture = eTex;
+          sp.height  = ENEMY_H;
+          sp.width   = Math.round(ENEMY_H * (eTex.width / eTex.height));
         }
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1;
-      }
 
-      // ── Depth sort — переиспользуем массив ──
-      drawables.length = 0;
-      drawables.push({ wy: player.wy, type: 0 }); // 0 = player
-      for (const e of enemies) drawables.push({ wy: e.wy, type: 1, e });
-      drawables.sort((a, b) => a.wy - b.wy);
+        const facingLeft = (player.wx - e.wx) < 0;
+        if (facingLeft) sp.scale.x = -Math.abs(sp.scale.x);
+        else            sp.scale.x =  Math.abs(sp.scale.x);
 
-      for (const d of drawables) {
-        if (d.type === 0) {
-          // ── Персонаж ──
-          const crop    = walkCrops[player.frame] || {x:0,y:0,w:64,h:64};
-          const spriteW = Math.round(SPRITE_H * (crop.w / crop.h));
-          if (player.facingLeft) {
-            ctx.save();
-            ctx.translate(HW, 0); ctx.scale(-1, 1);
-            ctx.drawImage(walkFrames[player.frame], crop.x, crop.y, crop.w, crop.h,
-              -spriteW/2, HH - SPRITE_H/2, spriteW, SPRITE_H);
-            ctx.restore();
-          } else {
-            ctx.drawImage(walkFrames[player.frame], crop.x, crop.y, crop.w, crop.h,
-              HW - spriteW/2, HH - SPRITE_H/2, spriteW, SPRITE_H);
-          }
-
-          // ── Оружие ──
-          if (weaponImg && weaponBounds) {
-            const h = getHandPos(), angle = getAngleToMouse();
-            const flipY = Math.abs(angle) > Math.PI / 2;
-            ctx.save();
-            ctx.translate(h.x, h.y); ctx.rotate(angle);
-            if (flipY) ctx.scale(1, -1);
-            ctx.drawImage(weaponImg, weaponBounds.x, weaponBounds.y, weaponBounds.w, weaponBounds.h,
-              -WEAPON_W * 0.30, -WEAPON_H / 2, WEAPON_W, WEAPON_H);
-            ctx.restore();
-          }
-
+        // Белая вспышка попадания через GPU ColorMatrixFilter (brightness)
+        // — вместо offscreen canvas + source-atop в оригинале
+        if (!e.dead && e.hitFlash > 0) {
+          sp.filters = [ec._flashFilter];
         } else {
-          // ── Зомби ──
-          const e   = d.e;
-          const sx  = toScreenX(e.wx);
-          const sy  = toScreenY(e.wy);
-          const img = enemyFrames[e.frame];
-          const crop = enemyCrops[e.frame] || {x:0,y:0,w:64,h:64};
-          if (!img) continue;
-          const spriteW   = Math.round(ENEMY_H * (crop.w / crop.h));
-          const facingLeft = (player.wx - e.wx) < 0;
-
-          const useFlash = !e.dead && e.hitFlash > 0;
-          if (e.dead) ctx.globalAlpha = Math.max(0, e.dying / 400);
-
-          if (useFlash) {
-            // Рисуем спрайт на offscreen canvas, заливаем белым через source-atop
-            // — белый цвет накладывается ТОЛЬКО на непрозрачные пиксели спрайта
-            fCtx.clearRect(0, 0, spriteW, ENEMY_H);
-            if (facingLeft) {
-              fCtx.save();
-              fCtx.translate(spriteW, 0); fCtx.scale(-1, 1);
-              fCtx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, spriteW, ENEMY_H);
-              fCtx.restore();
-            } else {
-              fCtx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, spriteW, ENEMY_H);
-            }
-            fCtx.globalCompositeOperation = 'source-atop';
-            fCtx.globalAlpha = (e.hitFlash / 100) * 0.85;
-            fCtx.fillStyle = '#ffffff';
-            fCtx.fillRect(0, 0, spriteW, ENEMY_H);
-            fCtx.globalCompositeOperation = 'source-over';
-            fCtx.globalAlpha = 1;
-            ctx.drawImage(flashCvs, 0, 0, spriteW, ENEMY_H,
-              sx - spriteW/2, sy - ENEMY_H/2, spriteW, ENEMY_H);
-          } else {
-            if (facingLeft) {
-              ctx.save();
-              ctx.translate(sx, 0); ctx.scale(-1, 1);
-              ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h,
-                -spriteW/2, sy - ENEMY_H/2, spriteW, ENEMY_H);
-              ctx.restore();
-            } else {
-              ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h,
-                sx - spriteW/2, sy - ENEMY_H/2, spriteW, ENEMY_H);
-            }
-          }
-          ctx.globalAlpha = 1;
+          sp.filters = null;
         }
       }
 
-      // ── Вспышки — без screen blending ──
-      for (const f of muzzleFlashes)
-        drawMuzzle(muzzleImg, f.x, f.y, 80, 80, f.angle, f.life);
+      // Depth sort (по Y-координате)
+      worldContainer.sortChildren();
 
-      // ── Пули ──
-      if (bulletImg) {
-        for (const b of bullets) {
-          const sx = toScreenX(b.wx), sy = toScreenY(b.wy);
-          ctx.save();
-          ctx.globalAlpha = Math.min(1, b.life * 2);
-          ctx.translate(sx, sy); ctx.rotate(b.angle);
-          ctx.drawImage(bulletImg, -26, -26, 52, 52);
-          ctx.restore();
-        }
-      }
-
-      // ── Прицел (только десктоп) ──
-      if (!isMobile && crosshairImg) {
-        ctx.globalAlpha = 0.85;
-        ctx.drawImage(crosshairImg, mouse.x - 20, mouse.y - 20, 40, 40);
-        ctx.globalAlpha = 1;
-      }
-
-      // ── HUD ──
+      // HP bar
       drawHealthBar();
-    }
 
-    if (loaded === TOTAL) startGame();
+      // Прицел
+      if (crosshairSprite) {
+        crosshairSprite.x = mouse.x;
+        crosshairSprite.y = mouse.y;
+      }
+    });
+
+  })();
   </script>
 </body>
 </html>
