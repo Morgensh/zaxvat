@@ -529,7 +529,8 @@ function getHandPos() {
     }
 
     function shoot() {
-      if (bullets.length >= MAX_BULLETS) return;
+  if (bullets.length >= MAX_BULLETS) return;
+  shakeAmount = 6; // сила тряски в пикселях
       const tip = getBarrelTip(), a = getAngleToMouse();
 
       const bs   = acquireBullet();
@@ -596,6 +597,9 @@ function drawHealthBar() {
     // ═══════════════════════════════════════════════════════════
     // ИГРОВОЙ ЦИКЛ  — app.ticker = requestAnimationFrame обёртка Pixi
     // ═══════════════════════════════════════════════════════════
+    // ── Shake ──
+let shakeAmount = 0;
+const SHAKE_DECAY = 0.85; // насколько быстро затухает (0.8 = резко, 0.9 = плавнее)
     app.ticker.maxFPS = 60;
     app.ticker.add(() => {
       if (gameOver) return;
@@ -721,8 +725,11 @@ function drawHealthBar() {
       // ══════════════════════════════════════════════════════
 
       // Камера: двигаем worldContainer вместо toScreenX/Y
-      worldContainer.x = HW - player.wx;
-      worldContainer.y = HH - player.wy;
+      shakeAmount *= SHAKE_DECAY;
+const sx = shakeAmount > 0.3 ? (Math.random() - 0.5) * shakeAmount * 2 : 0;
+const sy = shakeAmount > 0.3 ? (Math.random() - 0.5) * shakeAmount * 2 : 0;
+worldContainer.x = HW - player.wx + sx;
+worldContainer.y = HH - player.wy + sy;
 
       // Тайловый сдвиг фона
       if (groundTile)  { groundTile.tilePosition.x  = -player.wx; groundTile.tilePosition.y  = -player.wy; }
