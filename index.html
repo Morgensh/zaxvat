@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <title>Walk & Shoot</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -43,7 +45,7 @@
       background: rgba(255,80,80,0.25);
       border: 2px solid rgba(255,80,80,0.45);
       display: none; align-items: center; justify-content: center;
-      font-size: 28px; z-index: 10; user-select: none;
+      z-index: 10; user-select: none;
       -webkit-tap-highlight-color: transparent;
     }
     #shoot-btn.active { background: rgba(255,80,80,0.5); }
@@ -57,7 +59,32 @@
     <span onclick="location.reload()">[ нажмите чтобы начать заново ]</span>
   </div>
   <div id="joystick-base"><div id="joystick-thumb"></div></div>
-  <div id="shoot-btn">🔫</div>
+  <div id="shoot-btn">
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="18" cy="18" r="10" stroke="rgba(255,255,255,0.9)" stroke-width="2"/>
+      <line x1="18" y1="4" x2="18" y2="12" stroke="rgba(255,255,255,0.9)" stroke-width="2" stroke-linecap="round"/>
+      <line x1="18" y1="24" x2="18" y2="32" stroke="rgba(255,255,255,0.9)" stroke-width="2" stroke-linecap="round"/>
+      <line x1="4" y1="18" x2="12" y2="18" stroke="rgba(255,255,255,0.9)" stroke-width="2" stroke-linecap="round"/>
+      <line x1="24" y1="18" x2="32" y2="18" stroke="rgba(255,255,255,0.9)" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="18" cy="18" r="2.5" fill="rgba(255,255,255,0.9)"/>
+    </svg>
+  </div>
+
+  <!-- Portrait overlay -->
+  <div id="rotate-overlay" style="
+    display:none; position:fixed; inset:0; z-index:100;
+    background:#0d0d0d; flex-direction:column;
+    align-items:center; justify-content:center; gap:20px;
+  ">
+    <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="20" y="8" width="28" height="48" rx="5" stroke="#555" stroke-width="2"/>
+      <path d="M10 38 C10 24 24 10 38 10" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+      <polyline points="34,4 38,10 32,14" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </svg>
+    <p style="color:#888; font-family:monospace; font-size:14px; letter-spacing:2px; text-align:center;">
+      ПОВЕРНИ ТЕЛЕФОН<br><span style="color:#444; font-size:11px;">для игры нужен горизонтальный экран</span>
+    </p>
+  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
   <script>
@@ -87,6 +114,7 @@
     let CW = window.innerWidth, CH = window.innerHeight;
     let HW = CW / 2, HH = CH / 2;
 
+    let groundTile, ground2Tile, ground3Tile;
     window.addEventListener('resize', () => {
       CW = window.innerWidth; CH = window.innerHeight;
       HW = CW / 2; HH = CH / 2;
@@ -95,6 +123,7 @@
       if (ground2Tile) { ground2Tile.width = CW; ground2Tile.height = CH; }
       if (ground3Tile) { ground3Tile.width = CW; ground3Tile.height = CH; }
     });
+
 
     // ═══════════════════════════════════════════════════════════
     // КОНТЕЙНЕРЫ
@@ -120,13 +149,13 @@
     hudContainer.addChild(hpGfx);
 
     // Счётчик убийств
-    const killText = new PIXI.Text('💀 0', {
+    const killText = new PIXI.Text('X 0', {
       fontFamily: 'monospace', fontSize: 11, fill: 0xbbbbbb,
     });
     hudContainer.addChild(killText);
 
     // Счётчик патронов
-    const ammoText = new PIXI.Text('🔫 20', {
+    const ammoText = new PIXI.Text('[ ] 20', {
       fontFamily: 'monospace', fontSize: 13, fill: 0xffffff,
     });
     hudContainer.addChild(ammoText);
@@ -221,7 +250,6 @@
     // ═══════════════════════════════════════════════════════════
     // ТАЙЛОВЫЙ ФОН
     // ═══════════════════════════════════════════════════════════
-    let groundTile, ground2Tile, ground3Tile;
     if (TEX.ground && TEX.ground !== PIXI.Texture.EMPTY) {
       groundTile = new PIXI.TilingSprite(TEX.ground, CW, CH);
       groundTile.alpha = 0.90; groundTile.blendMode = PIXI.BLEND_MODES.MULTIPLY;
@@ -276,6 +304,19 @@
     // ВВОД
     // ═══════════════════════════════════════════════════════════
     const isMobile = 'ontouchstart' in window;
+
+    // ── Ориентация — блокируем портретный режим ──
+    const rotateOverlay = document.getElementById('rotate-overlay');
+    function checkOrientation() {
+      if (!rotateOverlay) return;
+      const isPortrait = window.innerHeight > window.innerWidth;
+      rotateOverlay.style.display = (isMobile && isPortrait) ? 'flex' : 'none';
+    }
+    window.addEventListener('orientationchange', () => { setTimeout(checkOrientation, 100); });
+    if (isMobile && screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('landscape').catch(() => {});
+    }
+    checkOrientation();
     const keys     = {};
     const mouse    = { x: HW, y: HH };
     if (!isMobile) document.body.style.cursor = 'none';
@@ -549,7 +590,7 @@
     }
 
     function updateAmmoHUD() {
-      ammoText.text = `🔫 ${ammo}`;
+      ammoText.text = `[ ] ${ammo}`;
       ammoText.style.fill = ammo <= AMMO_LOW ? 0xff4444 : 0xffffff;
     }
 
@@ -727,7 +768,7 @@
             e.hp--; e.hitFlash = 100;
             if (e.hp <= 0) {
               e.dead = true; e.dying = 400; killCount++;
-              killText.text = `💀 ${killCount}`;
+              killText.text = `X ${killCount}`;
               shakeAmount = Math.max(shakeAmount, 12);
             }
             hit = true; break;
