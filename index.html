@@ -70,21 +70,6 @@
     </svg>
   </div>
 
-  <!-- Portrait overlay -->
-  <div id="rotate-overlay" style="
-    display:none; position:fixed; inset:0; z-index:100;
-    background:#0d0d0d; flex-direction:column;
-    align-items:center; justify-content:center; gap:20px;
-  ">
-    <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="20" y="8" width="28" height="48" rx="5" stroke="#555" stroke-width="2"/>
-      <path d="M10 38 C10 24 24 10 38 10" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round" fill="none"/>
-      <polyline points="34,4 38,10 32,14" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-    </svg>
-    <p style="color:#888; font-family:monospace; font-size:14px; letter-spacing:2px; text-align:center;">
-      ПОВЕРНИ ТЕЛЕФОН<br><span style="color:#444; font-size:11px;">для игры нужен горизонтальный экран</span>
-    </p>
-  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
   <script>
@@ -305,18 +290,6 @@
     // ═══════════════════════════════════════════════════════════
     const isMobile = 'ontouchstart' in window;
 
-    // ── Ориентация — блокируем портретный режим ──
-    const rotateOverlay = document.getElementById('rotate-overlay');
-    function checkOrientation() {
-      if (!rotateOverlay) return;
-      const isPortrait = window.innerHeight > window.innerWidth;
-      rotateOverlay.style.display = (isMobile && isPortrait) ? 'flex' : 'none';
-    }
-    window.addEventListener('orientationchange', () => { setTimeout(checkOrientation, 100); });
-    if (isMobile && screen.orientation && screen.orientation.lock) {
-      screen.orientation.lock('landscape').catch(() => {});
-    }
-    checkOrientation();
     const keys     = {};
     const mouse    = { x: HW, y: HH };
     if (!isMobile) document.body.style.cursor = 'none';
