@@ -9,7 +9,7 @@ export const CHARACTERS = {
     frameCount:   8,
     speed:        7,
     maxHp:        100,
-    spriteH:      85,
+    spriteH:      66,   // было 85 — уменьшено для лучшего вида
   },
 };
 
@@ -21,9 +21,9 @@ export const ENEMIES_CONFIG = {
     speed:        1.8,
     hp:           3,
     damage:       18,
-    spriteH:      75,
+    spriteH:      56,   // было 75 — уменьшено
     frameDelay:   110,
-    hitRadius:    30,
+    hitRadius:    26,
   },
 };
 
