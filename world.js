@@ -246,7 +246,7 @@ export function createWorld({
   function acquirePickupSprite() {
     if (pickupPool.length) { const s = pickupPool.pop(); s.visible = true; return s; }
     const s = new PIXI.Sprite(magazinTex !== PIXI.Texture.EMPTY ? magazinTex : PIXI.Texture.WHITE);
-    s.anchor.set(0.5); s.width = 44; s.height = 44;
+    s.anchor.set(0.5); s.width = 28; s.height = 28;
     worldContainer.addChild(s);
     return s;
   }
@@ -254,7 +254,7 @@ export function createWorld({
   function spawnMagazine(wx, wy) {
     const sp = acquirePickupSprite();
     sp.x = wx; sp.y = wy; sp.zIndex = wy - 90000;
-    sp.alpha = 1; sp.width = 44; sp.height = 44;
+    sp.alpha = 1; sp.width = 28; sp.height = 28;
     pickups.push({ wx, wy, sprite: sp, bob: Math.random() * Math.PI * 2 });
   }
 
@@ -272,7 +272,7 @@ export function createWorld({
       p.bob += dt * 0.003;
       p.sprite.y = p.wy + Math.sin(p.bob) * 5;
       const sc = 0.9 + Math.sin(p.bob) * 0.1;
-      p.sprite.width = 44 * sc; p.sprite.height = 44 * sc;
+      p.sprite.width = 28 * sc; p.sprite.height = 28 * sc;
       const dx = wx - p.wx, dy = wy - p.wy;
       if (dx * dx + dy * dy < MAG_PICKUP_RADIUS2) {
         onAmmoPickup();

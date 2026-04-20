@@ -7,7 +7,6 @@ import { Hub } from './hub.js';
 import { loadAllAssets } from './textures.js';
 import { createWorld }   from './world.js';
 import { createPlayer }  from './player.js';
-import { Sound }         from './sound.js';
 
 (async () => {
 
@@ -17,22 +16,11 @@ import { Sound }         from './sound.js';
   const startBtn   = document.getElementById('start-btn');
   const gameRoot   = document.getElementById('game-root');
 
-  // ── Определяем ландшафтные размеры ───────────────────────────────
-  // На мобильном в портрете: game-root физически повёрнут на 90°,
-  // поэтому ширина игры = высота экрана, высота игры = ширина экрана.
-  const isMobileDevice = 'ontouchstart' in window;
-
-  function getLandscapeDims() {
-    const w = window.innerWidth, h = window.innerHeight;
-    // В портрете на мобильном меняем местами
-    if (isMobileDevice && h > w) return { W: h, H: w };
-    return { W: w, H: h };
-  }
-
   // ═══════════════════════════════════════════════════════════════
   // PIXI APP
   // ═══════════════════════════════════════════════════════════════
-  const { W: initW, H: initH } = getLandscapeDims();
+  const initW = window.innerWidth;
+  const initH = window.innerHeight;
 
   const app = new PIXI.Application({
     width:           initW,
@@ -44,9 +32,7 @@ import { Sound }         from './sound.js';
     powerPreference: 'high-performance',
   });
 
-  // Добавляем canvas в #game-root, а не в body
   gameRoot.appendChild(app.view);
-  // Канвас занимает 100% контейнера
   Object.assign(app.view.style, {
     position: 'absolute', top: '0', left: '0',
     width: '100%', height: '100%',
@@ -205,11 +191,11 @@ import { Sound }         from './sound.js';
 
   // ── Resize ────────────────────────────────────────────────────
   window.addEventListener('resize', () => {
-    const { W, H } = getLandscapeDims();
-    CW = W; CH = H; HW = CW / 2; HH = CH / 2;
+    CW = window.innerWidth; CH = window.innerHeight;
+    HW = CW / 2; HH = CH / 2;
     app.renderer.resize(CW, CH);
     worldSys.onResize();
-    _lastHp = -1; // форсируем перерисовку HP-бара
+    _lastHp = -1;
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -218,7 +204,6 @@ import { Sound }         from './sound.js';
   await new Promise(resolve => {
     startBtn.addEventListener('click', () => {
       menuEl.style.display = 'none';
-      Sound.resume(); // разблокируем AudioContext после жеста
       resolve();
     }, { once: true });
   });
@@ -244,11 +229,9 @@ import { Sound }         from './sound.js';
     if (gameOver) return;
     const dt = Math.min(app.ticker.deltaMS, 50);
 
-    // Обновляем системы
     playerSys.update(dt, (bx, by, r2) => worldSys.checkBulletHit(bx, by, r2));
     worldSys.update(dt, playerSys.getCurrentWeaponKey());
 
-    // Таймеры спавна
     spawnTimer += dt;
     if (spawnTimer >= GAME.spawnInterval) {
       spawnTimer = 0;
@@ -267,24 +250,20 @@ import { Sound }         from './sound.js';
       worldSys.spawnWeaponDropNear(playerSys.getCurrentWeaponKey());
     }
 
-    // HUD — нет патронов
     if (noAmmoTimer > 0) {
       noAmmoTimer -= dt;
       noAmmoText.visible = Math.floor(noAmmoTimer / 200) % 2 === 0;
       if (noAmmoTimer <= 0) noAmmoText.visible = false;
     }
 
-    // HUD — метка оружия
     if (weaponLabelTimer > 0) {
       weaponLabelTimer -= dt;
       weaponLabelText.alpha = Math.min(1, weaponLabelTimer / 400);
       if (weaponLabelTimer <= 0) { weaponLabelText.text = ''; weaponLabelText.alpha = 0; }
     }
 
-    // Обновление ammo HUD каждый тик (дёшево — Text только если изменился)
     updateAmmoHUD(playerSys.getAmmo(), playerSys.isAmmoLow());
 
-    // Тряска камеры
     shakeAmount *= GAME.shakeDecay;
     const sx = shakeAmount > 0.3 ? (Math.random() - 0.5) * shakeAmount * 2 : 0;
     const sy = shakeAmount > 0.3 ? (Math.random() - 0.5) * shakeAmount * 2 : 0;
@@ -292,7 +271,6 @@ import { Sound }         from './sound.js';
     worldContainer.x = HW - p.wx + sx;
     worldContainer.y = HH - p.wy + sy;
 
-    // Вспышка урона
     if (p.hitFlash > 0) {
       vignetteGfx.visible = true;
       vignetteGfx.alpha   = (p.hitFlash / 350) * 0.38;
@@ -300,7 +278,6 @@ import { Sound }         from './sound.js';
       vignetteGfx.visible = false;
     }
 
-    // Рендер
     worldSys.render();
     playerSys.render();
     worldContainer.sortChildren();

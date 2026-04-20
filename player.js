@@ -3,37 +3,21 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { CHARACTERS, WEAPONS_CONFIG, PICKUPS_CONFIG } from './config.js';
-import { Sound } from './sound.js';
 
 export function createPlayer({
   worldContainer,
   hudContainer,
   walkTextures,
   weaponTexSets,
-  getViewport,       // () => { CW, CH, HW, HH }
-  onNoAmmo,          // () => void — нет патронов
-  onShake,           // (amount) => void — тряска камеры
-  onWeaponChanged,   // (weaponKey, label) => void
+  getViewport,
+  onNoAmmo,
+  onShake,
+  onWeaponChanged,
 }) {
   const CHAR   = CHARACTERS.hero;
   const PICKUP = PICKUPS_CONFIG.magazine;
 
   const isMobile = 'ontouchstart' in window;
-
-  // Мобильный в портрете? game-root повёрнут на 90°, нужна трансформация координат.
-  // Ландшафт определяем по ширине экрана vs высоте.
-  const isPortrait = () => isMobile && window.innerHeight > window.innerWidth;
-
-  // Преобразование экранных координат прикосновения/мыши → игровые
-  // При повороте на 90° по часовой:
-  //   gameX = screenY
-  //   gameY = screenWidth - screenX
-  function toGame(clientX, clientY) {
-    if (isPortrait()) {
-      return { x: clientY, y: window.innerWidth - clientX };
-    }
-    return { x: clientX, y: clientY };
-  }
 
   // ── Состояние игрока ──────────────────────────────────────────────
   const player = {
@@ -64,7 +48,6 @@ export function createPlayer({
   weaponSprite.anchor.set(0.30, 0.5);
   worldContainer.addChild(weaponSprite);
 
-  // ── Прицел ────────────────────────────────────────────────────────
   let crosshairSprite = null;
 
   // ── Ввод — клавиатура и мышь ──────────────────────────────────────
@@ -75,12 +58,12 @@ export function createPlayer({
 
   if (!isMobile) document.body.style.cursor = 'none';
 
-  window.addEventListener('keydown',   e => { keys[e.key] = true; });
-  window.addEventListener('keyup',     e => { keys[e.key] = false; });
+  window.addEventListener('keydown', e => { keys[e.key] = true; });
+  window.addEventListener('keyup',   e => { keys[e.key] = false; });
 
   window.addEventListener('mousemove', e => {
-    const g = toGame(e.clientX, e.clientY);
-    mouse.x = g.x; mouse.y = g.y;
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
   });
 
   window.addEventListener('mousedown', e => {
@@ -92,13 +75,10 @@ export function createPlayer({
   window.addEventListener('mouseup', e => { if (e.button === 0) mouseHeld = false; });
 
   // ── Тач управление ────────────────────────────────────────────────
-  // Джойстик: bx/by — позиция основания в ИГРОВЫХ координатах (= координатах game-root)
-  //           _tx0/_ty0 — стартовая позиция касания в ЭКРАННЫХ координатах (для вычисления дельты)
   const joy = {
     active: false, id: null,
-    bx: 0, by: 0,       // позиция основания джойстика в игровых координатах
-    _tx0: 0, _ty0: 0,   // стартовая позиция касания в экранных координатах
-    dx: 0, dy: 0,        // нормализованные значения [-1..1] в игровых осях
+    bx: 0, by: 0,
+    dx: 0, dy: 0,
   };
   const JOY_RADIUS = 45, JOY_DEAD = 8;
 
@@ -107,9 +87,8 @@ export function createPlayer({
   const shootBtn = document.getElementById('shoot-btn');
 
   if (isMobile) {
-    joyBase.style.display  = 'block';
+    // Кнопка стрельбы видна сразу, джойстик — только при касании
     shootBtn.style.display = 'flex';
-    document.getElementById('hint').style.display = 'none';
 
     const cv = document.querySelector('canvas') || document.body;
 
@@ -117,27 +96,22 @@ export function createPlayer({
     cv.addEventListener('touchstart', e => {
       e.preventDefault();
       for (const t of e.changedTouches) {
+        const onLeftSide = t.clientX < getViewport().CW * 0.5;
 
-        // Определяем «левую» сторону игрового экрана (где джойстик)
-        // В портрете: «левое» = верхняя половина физического экрана (clientY < screenH/2)
-        // В ландшафте: «левое» = левая половина экрана (clientX < CW/2)
-        const onLeftSide = isPortrait()
-          ? t.clientY < window.innerHeight * 0.5
-          : t.clientX < getViewport().CW * 0.5;
+        if (onLeftSide && !joy.active) {
+          // Показываем джойстик ТАМ где тронули
+          joy.active = true;
+          joy.id     = t.identifier;
+          joy.bx     = t.clientX;
+          joy.by     = t.clientY;
+          joy.dx     = 0;
+          joy.dy     = 0;
 
-        if (!onLeftSide || joy.active) continue;
-
-        joy.active = true;
-        joy.id     = t.identifier;
-        joy._tx0   = t.clientX;
-        joy._ty0   = t.clientY;
-        joy.dx     = 0; joy.dy = 0;
-
-        // Позиционируем основание джойстика в игровых координатах
-        const g = toGame(t.clientX, t.clientY);
-        joy.bx = g.x; joy.by = g.y;
-        joyBase.style.left = joy.bx + 'px';
-        joyBase.style.top  = joy.by + 'px';
+          joyBase.style.left    = joy.bx + 'px';
+          joyBase.style.top     = joy.by + 'px';
+          joyBase.style.display = 'block';
+          joyThumb.style.transform = 'translate(-50%, -50%)';
+        }
       }
     }, { passive: false });
 
@@ -147,20 +121,10 @@ export function createPlayer({
       for (const t of e.changedTouches) {
         if (t.identifier !== joy.id) continue;
 
-        let dgx, dgy; // дельта в ИГРОВЫХ координатах
-        if (isPortrait()) {
-          // Дельта экрана → дельта игры (90° поворот)
-          //   gameΔx = screenΔy
-          //   gameΔy = -screenΔx
-          dgx =  (t.clientY - joy._ty0);
-          dgy = -(t.clientX - joy._tx0);
-        } else {
-          dgx = t.clientX - joy.bx;
-          dgy = t.clientY - joy.by;
-        }
-
-        const d = Math.sqrt(dgx * dgx + dgy * dgy);
-        const c = Math.min(d, JOY_RADIUS);
+        const dgx = t.clientX - joy.bx;
+        const dgy = t.clientY - joy.by;
+        const d   = Math.sqrt(dgx * dgx + dgy * dgy);
+        const c   = Math.min(d, JOY_RADIUS);
 
         joy.dx = d > JOY_DEAD ? (dgx / d) * (c / JOY_RADIUS) : 0;
         joy.dy = d > JOY_DEAD ? (dgy / d) * (c / JOY_RADIUS) : 0;
@@ -169,38 +133,39 @@ export function createPlayer({
         const vy = d > JOY_DEAD ? (dgy / d) * c : 0;
         joyThumb.style.transform = `translate(calc(-50% + ${vx}px), calc(-50% + ${vy}px))`;
 
-        // Прицел — направление движения
         mouse.x = joy.bx + joy.dx * 200;
         mouse.y = joy.by + joy.dy * 200;
       }
     }, { passive: false });
 
-    // ── Конец касания ─────────────────────────────────────────────
+    // ── Конец касания — скрываем джойстик ─────────────────────────
     const endJoy = e => {
       for (const t of e.changedTouches) {
         if (t.identifier !== joy.id) continue;
-        joy.active = false; joy.id = null; joy.dx = 0; joy.dy = 0;
-        joyThumb.style.transform = 'translate(-50%,-50%)';
+        joy.active = false;
+        joy.id     = null;
+        joy.dx     = 0;
+        joy.dy     = 0;
+        joyBase.style.display    = 'none';
+        joyThumb.style.transform = 'translate(-50%, -50%)';
       }
     };
     cv.addEventListener('touchend',    endJoy, { passive: false });
     cv.addEventListener('touchcancel', endJoy, { passive: false });
 
-    // ── Стрельба по касанию на «правой» стороне игрового экрана ──
+    // ── Стрельба касанием по правой стороне ───────────────────────
     cv.addEventListener('touchstart', e => {
       e.preventDefault();
       for (const t of e.changedTouches) {
-        // «Правая» сторона игры = нижняя половина физического экрана в портрете
-        const onRightSide = isPortrait()
-          ? t.clientY > window.innerHeight * 0.5
-          : t.clientX > getViewport().CW * 0.5;
-        if (onRightSide) _shoot();
+        if (t.clientX > getViewport().CW * 0.5) _shoot();
       }
     }, { passive: false });
 
-    // ── Кнопка выстрела ───────────────────────────────────────────
+    // ── Кнопка стрельбы ───────────────────────────────────────────
     shootBtn.addEventListener('touchstart', e => {
-      e.preventDefault(); shootBtn.classList.add('active'); _shoot();
+      e.preventDefault();
+      shootBtn.classList.add('active');
+      _shoot();
     }, { passive: false });
     shootBtn.addEventListener('touchend', () => shootBtn.classList.remove('active'));
   }
@@ -277,7 +242,6 @@ export function createPlayer({
     onWeaponChanged(key, w.label);
   }
 
-  // Создаём прицел
   const firstCrosshair = weaponTexSets['pistol'].crosshair;
   if (!isMobile && firstCrosshair && firstCrosshair !== PIXI.Texture.EMPTY) {
     crosshairSprite = new PIXI.Sprite(firstCrosshair);
@@ -293,13 +257,8 @@ export function createPlayer({
   function _shoot() {
     const w = WEAPONS_CONFIG[currentWeaponKey];
     if (w.fireMode === 'auto' && bullets.length >= w.maxBullets) return;
-    if (ammo <= 0) {
-      onNoAmmo(); return;
-    }
+    if (ammo <= 0) { onNoAmmo(); return; }
     ammo = Math.max(0, ammo - w.ammoPerShot);
-
-    // Звук выстрела
-    Sound.shoot(currentWeaponKey);
 
     onShake(w.fireMode === 'auto' ? 4 : 7);
 
@@ -331,17 +290,15 @@ export function createPlayer({
     muzzleFlashes.push({ life: 1, sprite: ms });
   }
 
-  // ── Обновление (тикер) ────────────────────────────────────────────
+  // ── Обновление ────────────────────────────────────────────────────
   function update(dt, checkBulletHit) {
     const w = WEAPONS_CONFIG[currentWeaponKey];
 
-    // Авто-огонь
     if (mouseHeld && w.fireMode === 'auto') {
       autoFireTimer -= dt;
       if (autoFireTimer <= 0) { _shoot(); autoFireTimer = w.fireRate; }
     }
 
-    // Движение
     const left  = keys['ArrowLeft']  || keys['a'] || keys['A'] || (isMobile && joy.dx < -0.2);
     const right = keys['ArrowRight'] || keys['d'] || keys['D'] || (isMobile && joy.dx >  0.2);
     const up    = keys['ArrowUp']    || keys['w'] || keys['W'] || (isMobile && joy.dy < -0.2);
@@ -371,7 +328,6 @@ export function createPlayer({
       }
     } else { player.frame = 0; }
 
-    // Пули
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       b.wx += b.vx; b.wy += b.vy;
@@ -386,7 +342,6 @@ export function createPlayer({
       }
     }
 
-    // Вспышки
     for (let i = muzzleFlashes.length - 1; i >= 0; i--) {
       const f = muzzleFlashes[i];
       f.life -= dt / 80;

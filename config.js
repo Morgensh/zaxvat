@@ -9,7 +9,7 @@ export const CHARACTERS = {
     frameCount:   8,
     speed:        7,
     maxHp:        100,
-    spriteH:      66,   // было 85 — уменьшено для лучшего вида
+    spriteH:      44,
   },
 };
 
@@ -21,16 +21,13 @@ export const ENEMIES_CONFIG = {
     speed:        1.8,
     hp:           3,
     damage:       18,
-    spriteH:      56,   // было 75 — уменьшено
+    spriteH:      38,
     frameDelay:   110,
-    hitRadius:    26,
+    hitRadius:    18,
   },
 };
 
 // ── Оружие ─────────────────────────────────────────────────────────
-// weaponR2 = пистолет  (стартовое): semi, 1 пуля за клик
-// weaponR3 = дробовик:              semi, 2 параллельные пули за клик
-// weaponR1 = автомат:               зажать — стреляет непрерывно
 export const WEAPONS_CONFIG = {
   pistol: {
     label:          'ПИСТОЛЕТ',
@@ -38,16 +35,16 @@ export const WEAPONS_CONFIG = {
     bulletFile:     'weapon/bullet.png',
     muzzleFile:     'weapon/muzzle.png',
     crosshairFile:  'weapon/crosshair.png',
-    width:          55,
-    height:         27,
+    width:          37,
+    height:         18,
     bulletSpeed:    14,
-    bulletRadius:   28,
+    bulletRadius:   20,
     maxBullets:     20,
-    fireMode:       'semi',   // один выстрел за клик
+    fireMode:       'semi',
     bulletsPerShot: 1,
-    perpSpread:     0,        // перпендикулярный разброс (px) между пулями
-    angleSpread:    0,        // угловой разброс (рад)
-    fireRate:       0,        // мс между авто-выстрелами (не используется в semi)
+    perpSpread:     0,
+    angleSpread:    0,
+    fireRate:       0,
     ammoPerShot:    1,
   },
   shotgun: {
@@ -56,17 +53,17 @@ export const WEAPONS_CONFIG = {
     bulletFile:     'weapon/bullet.png',
     muzzleFile:     'weapon/muzzle.png',
     crosshairFile:  'weapon/crosshair.png',
-    width:          72,
-    height:         33,
+    width:          48,
+    height:         22,
     bulletSpeed:    12,
-    bulletRadius:   32,
+    bulletRadius:   22,
     maxBullets:     20,
     fireMode:       'semi',
-    bulletsPerShot: 2,        // 2 параллельные пули (одна над другой)
-    perpSpread:     12,       // 12px между пулями (перпендикулярно стволу)
+    bulletsPerShot: 2,
+    perpSpread:     10,
     angleSpread:    0,
     fireRate:       0,
-    ammoPerShot:    1,        // 1 патрон за выстрел (2 пули = 1 заряд)
+    ammoPerShot:    1,
   },
   auto: {
     label:          'АВТОМАТ',
@@ -74,16 +71,16 @@ export const WEAPONS_CONFIG = {
     bulletFile:     'weapon/bullet.png',
     muzzleFile:     'weapon/muzzle.png',
     crosshairFile:  'weapon/crosshair.png',
-    width:          88,
-    height:         35,
+    width:          59,
+    height:         23,
     bulletSpeed:    16,
-    bulletRadius:   28,
+    bulletRadius:   20,
     maxBullets:     30,
-    fireMode:       'auto',   // зажать — непрерывная стрельба
+    fireMode:       'auto',
     bulletsPerShot: 1,
     perpSpread:     0,
-    angleSpread:    0.07,     // небольшой разброс у автомата
-    fireRate:       115,      // мс между выстрелами
+    angleSpread:    0.07,
+    fireRate:       115,
     ammoPerShot:    1,
   },
 };
@@ -106,7 +103,7 @@ export const PICKUPS_CONFIG = {
 // ── Подбираемые оружия (дропы) ─────────────────────────────────────
 export const WEAPON_DROPS_CONFIG = {
   pickupRadius:  48,
-  spawnInterval: 20000,   // новый дроп каждые 20 сек
+  spawnInterval: 20000,
   spawnMinDist:  220,
   spawnMaxDist:  480,
 };
